@@ -24,7 +24,7 @@ STATE_STYLES = {
     "idle": {
         "icon": "🎤",
         "title": "",
-        "size": (48, 30),
+        "size": (58, 30),
         "background": (0.10, 0.10, 0.12, 0.66),
         "border": (1.0, 1.0, 1.0, 0.18),
         "icon_color": (1.0, 1.0, 1.0, 0.92),
@@ -115,7 +115,10 @@ class IndicatorView(NSView):
         self.icon_label.setStringValue_(style["icon"])
         self.icon_label.setTextColor_(_ns_color(style["icon_color"]))
         if state == "idle":
-            self.icon_label.setFrame_(NSMakeRect(width - 28, 5, 18, max(height - 10, 18)))
+            icon_width = 26
+            self.icon_label.setFrame_(
+                NSMakeRect((width - icon_width) / 2, 5, icon_width, max(height - 10, 18))
+            )
         else:
             self.icon_label.setFrame_(NSMakeRect(12, 9, 24, max(height - 18, 18)))
 
