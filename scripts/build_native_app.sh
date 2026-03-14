@@ -20,6 +20,12 @@ APP_DIR="$INSTALL_DIR/$APP_BUNDLE_NAME"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
 
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Error: Python venv not found at $PYTHON_BIN" >&2
+  echo "Run: python3 -m venv .venv && .venv/bin/pip install mlx-whisper" >&2
+  exit 1
+fi
+
 mkdir -p "$DIST_DIR"
 
 set +e
@@ -28,9 +34,7 @@ status=$?
 set -e
 
 if [[ $status -ne 0 ]]; then
-  cat >&2 <<'EOF'
-Native Swift build failed.
-EOF
+  echo "Swift build failed." >&2
   exit $status
 fi
 
@@ -40,9 +44,11 @@ APP_BIN="$BIN_DIR/$APP_BINARY"
 SYSTEM_AUDIO_BIN="$BIN_DIR/$SYSTEM_AUDIO_BINARY"
 
 rm -rf "$STAGED_APP_DIR"
-mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources" "$STAGED_APP_DIR/Contents/Frameworks"
+mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
 
-cp "$APP_BIN" "$STAGED_APP_DIR/Contents/MacOS/Muesli"
+cp "$APP_BIN" "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
+chmod +x "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
+
 cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
 cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
 if [[ -d "$ROOT/assets/fonts" ]]; then
@@ -58,18 +64,10 @@ if [[ -f "$ROOT/bridge/paste_text.py" ]]; then
   cp "$ROOT/bridge/paste_text.py" "$STAGED_APP_DIR/Contents/Resources/paste_text.py"
 fi
 
-while IFS= read -r bundle_path; do
-  ditto "$bundle_path" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle_path")"
-done < <(find "$BIN_DIR" -maxdepth 1 -name '*.bundle' -type d)
-
-while IFS= read -r dylib_path; do
-  ditto "$dylib_path" "$STAGED_APP_DIR/Contents/Frameworks/$(basename "$dylib_path")"
-done < <(find "$BIN_DIR" -maxdepth 1 -name '*.dylib' -type f)
-
 cat > "$STAGED_APP_DIR/Contents/Resources/runtime.json" <<JSON
 {
   "repo_root": "$ROOT",
-  "python_executable": "$(if [[ -x "$PYTHON_BIN" ]]; then echo "$PYTHON_BIN"; fi)"
+  "python_executable": "$PYTHON_BIN"
 }
 JSON
 
@@ -85,9 +83,9 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>0.2.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.2.0</string>
   <key>CFBundleExecutable</key>
   <string>$APP_EXECUTABLE_NAME</string>
   <key>CFBundlePackageType</key>
@@ -110,8 +108,15 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-mv "$STAGED_APP_DIR/Contents/MacOS/Muesli" "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
-chmod +x "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
+# Confirm before overwriting existing app
+if [[ -d "$APP_DIR" ]]; then
+  echo "Warning: $APP_DIR already exists and will be replaced."
+  read -p "Continue? [y/N] " confirm
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo "Aborted. Staged app at: $STAGED_APP_DIR"
+    exit 0
+  fi
+fi
 
 mkdir -p "$INSTALL_DIR"
 rm -rf "$APP_DIR"

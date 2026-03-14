@@ -4,40 +4,20 @@ struct BackendOption: Equatable {
     let backend: String
     let model: String
     let label: String
-    let nativeModel: String?
 
     static let whisper = BackendOption(
         backend: "whisper",
         model: "mlx-community/whisper-small.en-mlx",
-        label: "Whisper Small",
-        nativeModel: "small"
+        label: "Whisper Small"
     )
 
     static let qwen = BackendOption(
         backend: "qwen",
         model: "mlx-community/Qwen3-ASR-0.6B-4bit",
-        label: "Qwen3 ASR 0.6B 4-bit",
-        nativeModel: nil
+        label: "Qwen3 ASR 0.6B 4-bit"
     )
 
     static let all: [BackendOption] = [.whisper, .qwen]
-}
-
-struct TranscriptionRuntimeOption: Equatable {
-    let id: String
-    let label: String
-
-    static let native = TranscriptionRuntimeOption(
-        id: "native",
-        label: "Native Swift"
-    )
-
-    static let legacyPython = TranscriptionRuntimeOption(
-        id: "legacy_python",
-        label: "Legacy Python"
-    )
-
-    static let all: [TranscriptionRuntimeOption] = [.native, .legacyPython]
 }
 
 struct MeetingSummaryBackendOption: Equatable {
@@ -59,7 +39,6 @@ struct MeetingSummaryBackendOption: Equatable {
 
 struct AppConfig: Codable {
     var hotkey: String = "left_command_hold"
-    var transcriptionRuntime: String = TranscriptionRuntimeOption.native.id
     var sttBackend: String = BackendOption.whisper.backend
     var sttModel: String = BackendOption.whisper.model
     var meetingSummaryBackend: String = MeetingSummaryBackendOption.openAI.backend
@@ -80,7 +59,6 @@ struct AppConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case hotkey
-        case transcriptionRuntime = "transcription_runtime"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
         case meetingSummaryBackend = "meeting_summary_backend"
@@ -98,6 +76,31 @@ struct AppConfig: Codable {
         case openRouterModel = "openrouter_model"
         case summaryModel = "summary_model"
         case meetingSummaryModel = "meeting_summary_model"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = AppConfig()
+        hotkey = (try? c.decode(String.self, forKey: .hotkey)) ?? defaults.hotkey
+        sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
+        sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
+        whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
+        idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
+        autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
+        launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
+        openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
+        showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator
+        dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
+        indicatorOrigin = try? c.decode(CGPointCodable.self, forKey: .indicatorOrigin)
+        openAIAPIKey = (try? c.decode(String.self, forKey: .openAIAPIKey)) ?? defaults.openAIAPIKey
+        openRouterAPIKey = (try? c.decode(String.self, forKey: .openRouterAPIKey)) ?? defaults.openRouterAPIKey
+        openAIModel = (try? c.decode(String.self, forKey: .openAIModel)) ?? defaults.openAIModel
+        openRouterModel = (try? c.decode(String.self, forKey: .openRouterModel)) ?? defaults.openRouterModel
+        summaryModel = (try? c.decode(String.self, forKey: .summaryModel)) ?? defaults.summaryModel
+        meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
     }
 }
 
@@ -124,7 +127,6 @@ struct CGPointCodable: Codable {
             self.init(x: x, y: y)
             return
         }
-
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             x: try container.decode(Double.self, forKey: .x),
@@ -139,8 +141,7 @@ struct CGPointCodable: Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case x
-        case y
+        case x, y
     }
 }
 

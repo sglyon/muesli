@@ -7,6 +7,7 @@ final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore = ConfigStore()
     private let dictationStore = DictationStore()
+    private let workerClient: PythonWorkerClient
     private let transcriptionCoordinator: TranscriptionCoordinator
     private let hotkeyMonitor = HotkeyMonitor()
     private let recorder = MicrophoneRecorder()
@@ -20,7 +21,6 @@ final class MuesliController: NSObject {
     let appState = AppState()
 
     private(set) var config: AppConfig
-    private(set) var selectedRuntime: TranscriptionRuntimeOption
     private(set) var selectedBackend: BackendOption
     private(set) var selectedMeetingSummaryBackend: MeetingSummaryBackendOption
     private var activeMeetingSession: MeetingSession?
@@ -33,16 +33,14 @@ final class MuesliController: NSObject {
         let loadedConfig = configStore.load()
         self.runtime = runtime
         self.config = loadedConfig
-        self.selectedRuntime = TranscriptionRuntimeOption.all.first(where: {
-            $0.id == loadedConfig.transcriptionRuntime
-        }) ?? .native
         self.selectedBackend = BackendOption.all.first(where: {
             $0.backend == loadedConfig.sttBackend && $0.model == loadedConfig.sttModel
         }) ?? .whisper
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .openAI
-        self.transcriptionCoordinator = TranscriptionCoordinator(runtime: runtime)
+        self.workerClient = PythonWorkerClient(runtime: runtime)
+        self.transcriptionCoordinator = TranscriptionCoordinator(workerClient: workerClient)
         self.indicator = FloatingIndicatorController(configStore: configStore)
         super.init()
     }
@@ -52,6 +50,12 @@ final class MuesliController: NSObject {
             try dictationStore.migrateIfNeeded()
         } catch {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
+        }
+
+        do {
+            try workerClient.start()
+        } catch {
+            fputs("[muesli-native] worker start failed: \(error)\n", stderr)
         }
 
         hotkeyMonitor.onPrepare = { [weak self] in self?.handlePrepare() }
@@ -83,9 +87,8 @@ final class MuesliController: NSObject {
 
         Task { [weak self] in
             guard let self else { return }
-            let runtime = await self.transcriptionCoordinator.preload(config: self.config, option: self.selectedBackend)
+            await self.transcriptionCoordinator.preload(backend: self.selectedBackend)
             await MainActor.run {
-                self.selectedRuntime = runtime
                 self.refreshUI()
             }
         }
@@ -162,7 +165,6 @@ final class MuesliController: NSObject {
         appState.dictationStats = dictationStats()
         appState.meetingStats = meetingStats()
         appState.selectedBackend = selectedBackend
-        appState.selectedRuntime = selectedRuntime
         appState.selectedMeetingSummaryBackend = selectedMeetingSummaryBackend
         appState.config = config
         appState.isMeetingRecording = isMeetingRecording()
@@ -171,9 +173,6 @@ final class MuesliController: NSObject {
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
         mutate(&config)
         configStore.save(config)
-        selectedRuntime = TranscriptionRuntimeOption.all.first(where: {
-            $0.id == config.transcriptionRuntime
-        }) ?? .native
         selectedBackend = BackendOption.all.first(where: {
             $0.backend == config.sttBackend && $0.model == config.sttModel
         }) ?? .whisper
@@ -196,9 +195,8 @@ final class MuesliController: NSObject {
         }
         Task { [weak self] in
             guard let self else { return }
-            let runtime = await self.transcriptionCoordinator.preload(config: self.config, option: option)
+            await self.transcriptionCoordinator.preload(backend: option)
             await MainActor.run {
-                self.selectedRuntime = runtime
                 self.statusBarController?.refresh()
                 self.historyWindowController?.updateBackendLabel()
             }
@@ -208,20 +206,6 @@ final class MuesliController: NSObject {
     func selectMeetingSummaryBackend(_ option: MeetingSummaryBackendOption) {
         updateConfig {
             $0.meetingSummaryBackend = option.backend
-        }
-    }
-
-    func selectRuntime(_ option: TranscriptionRuntimeOption) {
-        updateConfig {
-            $0.transcriptionRuntime = option.id
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            let runtime = await self.transcriptionCoordinator.preload(config: self.config, option: self.selectedBackend)
-            await MainActor.run {
-                self.selectedRuntime = runtime
-                self.refreshUI()
-            }
         }
     }
 
@@ -269,12 +253,6 @@ final class MuesliController: NSObject {
         selectBackend(option)
     }
 
-    @objc func selectRuntimeFromMenu(_ sender: NSMenuItem) {
-        guard let runtimeID = sender.representedObject as? String,
-              let option = TranscriptionRuntimeOption.all.first(where: { $0.id == runtimeID }) else { return }
-        selectRuntime(option)
-    }
-
     @objc func selectMeetingSummaryBackendFromMenu(_ sender: NSMenuItem) {
         guard let label = sender.representedObject as? String,
               let option = MeetingSummaryBackendOption.all.first(where: { $0.label == label }) else { return }
@@ -309,11 +287,10 @@ final class MuesliController: NSObject {
 
     func startMeetingRecording(title: String = "Meeting") {
         guard !isMeetingRecording() else { return }
-        let meetingBackend = selectedBackend.nativeModel == nil ? BackendOption.whisper : selectedBackend
         let meetingSession = MeetingSession(
             title: title,
             calendarEventID: nil,
-            backend: meetingBackend,
+            backend: selectedBackend,
             runtime: runtime,
             config: config,
             transcriptionCoordinator: transcriptionCoordinator
@@ -394,9 +371,7 @@ final class MuesliController: NSObject {
     }
 
     private func handlePrepare() {
-        if isMeetingRecording() {
-            return
-        }
+        if isMeetingRecording() { return }
         fputs("[muesli-native] prepare\n", stderr)
         do {
             try recorder.prepare()
@@ -408,9 +383,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStart() {
-        if isMeetingRecording() {
-            return
-        }
+        if isMeetingRecording() { return }
         fputs("[muesli-native] recording start\n", stderr)
         do {
             try recorder.start()
@@ -423,9 +396,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleCancel() {
-        if isMeetingRecording() {
-            return
-        }
+        if isMeetingRecording() { return }
         fputs("[muesli-native] cancel\n", stderr)
         recorder.cancel()
         dictationStartedAt = nil
@@ -433,9 +404,7 @@ final class MuesliController: NSObject {
     }
 
     private func handleStop() {
-        if isMeetingRecording() {
-            return
-        }
+        if isMeetingRecording() { return }
         fputs("[muesli-native] stop\n", stderr)
         let startedAt = dictationStartedAt ?? Date()
         dictationStartedAt = nil
@@ -460,15 +429,11 @@ final class MuesliController: NSObject {
             }
 
             do {
-                let execution = try await self.transcriptionCoordinator.transcribeDictation(
+                let result = try await self.transcriptionCoordinator.transcribeDictation(
                     at: wavURL,
-                    config: self.config,
-                    option: self.selectedBackend
+                    backend: self.selectedBackend
                 )
-                let text = execution.result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                await MainActor.run {
-                    self.selectedRuntime = execution.runtime
-                }
+                let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else {
                     await MainActor.run {
                         self.setState(.idle)

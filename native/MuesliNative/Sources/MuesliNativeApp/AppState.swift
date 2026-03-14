@@ -22,7 +22,6 @@ final class AppState {
 
     // Config-driven state
     var selectedBackend: BackendOption = .whisper
-    var selectedRuntime: TranscriptionRuntimeOption = .native
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .openAI
     var config: AppConfig = AppConfig()
 

@@ -106,22 +106,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.setSubmenu(backendMenu, for: backendItem)
         menu.addItem(backendItem)
 
-        let runtimeItem = NSMenuItem(title: "Runtime", action: nil, keyEquivalent: "")
-        let runtimeMenu = NSMenu()
-        for option in TranscriptionRuntimeOption.all {
-            let prefix = controller.selectedRuntime == option ? "✓ " : ""
-            let item = NSMenuItem(
-                title: "\(prefix)\(option.label)",
-                action: #selector(MuesliController.selectRuntimeFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            item.target = controller
-            item.representedObject = option.id
-            runtimeMenu.addItem(item)
-        }
-        menu.setSubmenu(runtimeMenu, for: runtimeItem)
-        menu.addItem(runtimeItem)
-
         let meetingBackendItem = NSMenuItem(title: "Meetings Backend", action: nil, keyEquivalent: "")
         let meetingBackendMenu = NSMenu()
         for option in MeetingSummaryBackendOption.all {

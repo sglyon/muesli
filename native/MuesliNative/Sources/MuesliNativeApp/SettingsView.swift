@@ -37,16 +37,6 @@ struct SettingsView: View {
 
                 settingsSection("Transcription") {
                     settingsPicker(
-                        "Runtime",
-                        selection: appState.selectedRuntime.label,
-                        options: TranscriptionRuntimeOption.all.map(\.label)
-                    ) { label in
-                        if let option = TranscriptionRuntimeOption.all.first(where: { $0.label == label }) {
-                            controller.selectRuntime(option)
-                        }
-                    }
-
-                    settingsPicker(
                         "Backend",
                         selection: appState.selectedBackend.label,
                         options: BackendOption.all.map(\.label)

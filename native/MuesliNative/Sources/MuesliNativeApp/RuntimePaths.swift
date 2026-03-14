@@ -28,7 +28,7 @@ struct RuntimePaths {
                     pasteScript: bundleResource.appendingPathComponent("paste_text.py"),
                     systemAudioTool: {
                         let tool = bundleResource.appendingPathComponent("MuesliSystemAudio")
-                        return FileManager.default.fileExists(atPath: tool.path) ? tool : nil
+                        return fileManager.fileExists(atPath: tool.path) ? tool : nil
                     }(),
                     menuIcon: bundleResource.appendingPathComponent("menu_m_template.png"),
                     appIcon: bundleResource.appendingPathComponent("muesli.icns"),
@@ -37,7 +37,7 @@ struct RuntimePaths {
             }
         }
 
-        var searchURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        var searchURL = URL(fileURLWithPath: fileManager.currentDirectoryPath)
         for _ in 0..<8 {
             let candidate = searchURL.appendingPathComponent("bridge/worker.py")
             if fileManager.fileExists(atPath: candidate.path) {

@@ -60,14 +60,14 @@ final class MeetingSession {
 
         let micResult: SpeechTranscriptionResult
         if let micAudioURL {
-            micResult = try await transcriptionCoordinator.transcribeMeeting(at: micAudioURL, option: backend)
+            micResult = try await transcriptionCoordinator.transcribeMeeting(at: micAudioURL, backend: backend)
         } else {
             micResult = SpeechTranscriptionResult(text: "", segments: [])
         }
 
         let systemResult: SpeechTranscriptionResult
         if let systemAudioURL {
-            systemResult = try await transcriptionCoordinator.transcribeMeeting(at: systemAudioURL, option: backend)
+            systemResult = try await transcriptionCoordinator.transcribeMeeting(at: systemAudioURL, backend: backend)
         } else {
             systemResult = SpeechTranscriptionResult(text: "", segments: [])
         }
