@@ -291,7 +291,7 @@ final class FloatingIndicatorController {
         switch state {
         case .idle:
             size = isHovered ? NSSize(width: 220, height: 36) : NSSize(width: 44, height: 28)
-        case .preparing: size = NSSize(width: 126, height: 32)
+        case .preparing: size = NSSize(width: 44, height: 28)
         case .recording: size = NSSize(width: 80, height: 32)
         case .transcribing: size = NSSize(width: 120, height: 32)
         }
@@ -328,7 +328,7 @@ final class FloatingIndicatorController {
                 .colorWith(hex: 0x3B4757, alpha: 0.94),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.24),
                 "🎤",
-                "Preparing",
+                "",
                 .white,
                 .white,
                 1.0
