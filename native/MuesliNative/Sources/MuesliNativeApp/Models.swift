@@ -107,6 +107,7 @@ struct AppConfig: Codable {
     var idleTimeout: Double = 120
     var autoRecordMeetings: Bool = false
     var showMeetingDetectionNotification: Bool = true
+    var darkMode: Bool = true
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
@@ -129,6 +130,7 @@ struct AppConfig: Codable {
         case idleTimeout = "idle_timeout"
         case autoRecordMeetings = "auto_record_meetings"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case darkMode = "dark_mode"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
@@ -156,6 +158,7 @@ struct AppConfig: Codable {
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
         showMeetingDetectionNotification = (try? c.decode(Bool.self, forKey: .showMeetingDetectionNotification)) ?? defaults.showMeetingDetectionNotification
+        darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
         openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
         showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator

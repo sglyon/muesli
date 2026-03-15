@@ -30,6 +30,6 @@ struct DashboardRootView: View {
             .background(MuesliTheme.backgroundBase)
         }
         .frame(minWidth: 900, minHeight: 600)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(appState.config.darkMode ? .dark : .light)
     }
 }

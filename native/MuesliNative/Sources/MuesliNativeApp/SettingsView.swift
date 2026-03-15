@@ -27,6 +27,13 @@ struct SettingsView: View {
                     }
 
                     settingsToggle(
+                        "Dark mode",
+                        isOn: appState.config.darkMode
+                    ) { newValue in
+                        controller.updateConfig { $0.darkMode = newValue }
+                    }
+
+                    settingsToggle(
                         "Show floating indicator",
                         isOn: appState.config.showFloatingIndicator
                     ) { newValue in

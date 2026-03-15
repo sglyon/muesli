@@ -1,24 +1,36 @@
 import SwiftUI
 
 enum MuesliTheme {
-    // MARK: - Colors — Backgrounds (layered, darkest to lightest)
+    // MARK: - Colors — Backgrounds (layered)
 
-    static let backgroundDeep   = Color(hex: 0x111214)
-    static let backgroundBase   = Color(hex: 0x161719)
-    static let backgroundRaised = Color(hex: 0x1C1D20)
-    static let backgroundHover  = Color(hex: 0x232528)
+    static let backgroundDeep   = Color.adaptive(dark: 0x111214, light: 0xF5F5F7)
+    static let backgroundBase   = Color.adaptive(dark: 0x161719, light: 0xFFFFFF)
+    static let backgroundRaised = Color.adaptive(dark: 0x1C1D20, light: 0xF0F0F2)
+    static let backgroundHover  = Color.adaptive(dark: 0x232528, light: 0xE8E8EC)
 
     // MARK: - Surfaces (interactive elements)
 
-    static let surfacePrimary   = Color(hex: 0x262830)
-    static let surfaceSelected  = Color(hex: 0x2E3340)
-    static let surfaceBorder    = Color.white.opacity(0.07)
+    static let surfacePrimary   = Color.adaptive(dark: 0x262830, light: 0xE5E5EA)
+    static let surfaceSelected  = Color.adaptive(dark: 0x2E3340, light: 0xD6DFFE)
+    static let surfaceBorder    = Color.adaptiveAlpha(
+        dark: .white, darkAlpha: 0.07,
+        light: .black, lightAlpha: 0.08
+    )
 
     // MARK: - Text hierarchy
 
-    static let textPrimary      = Color.white.opacity(0.92)
-    static let textSecondary    = Color.white.opacity(0.62)
-    static let textTertiary     = Color.white.opacity(0.40)
+    static let textPrimary = Color.adaptiveAlpha(
+        dark: .white, darkAlpha: 0.92,
+        light: .black, lightAlpha: 0.88
+    )
+    static let textSecondary = Color.adaptiveAlpha(
+        dark: .white, darkAlpha: 0.62,
+        light: .black, lightAlpha: 0.55
+    )
+    static let textTertiary = Color.adaptiveAlpha(
+        dark: .white, darkAlpha: 0.40,
+        light: .black, lightAlpha: 0.33
+    )
 
     // MARK: - Accent
 
@@ -60,6 +72,8 @@ enum MuesliTheme {
     static let cornerXL: CGFloat = 20
 }
 
+// MARK: - Color Helpers
+
 extension Color {
     init(hex: Int) {
         self.init(
@@ -67,5 +81,25 @@ extension Color {
             green: Double((hex >> 8) & 0xFF) / 255.0,
             blue: Double(hex & 0xFF) / 255.0
         )
+    }
+
+    static func adaptive(dark: Int, light: Int) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(
+                red: CGFloat((hex >> 16) & 0xFF) / 255.0,
+                green: CGFloat((hex >> 8) & 0xFF) / 255.0,
+                blue: CGFloat(hex & 0xFF) / 255.0,
+                alpha: 1.0
+            )
+        })
+    }
+
+    static func adaptiveAlpha(dark: NSColor, darkAlpha: CGFloat, light: NSColor, lightAlpha: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? dark.withAlphaComponent(darkAlpha)
+                : light.withAlphaComponent(lightAlpha)
+        })
     }
 }
