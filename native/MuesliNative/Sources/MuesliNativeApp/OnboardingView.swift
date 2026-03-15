@@ -7,7 +7,7 @@ struct OnboardingView: View {
 
     @State private var currentStep = 0
     @State private var userName = ""
-    @State private var selectedBackend: BackendOption = .whisper
+    @State private var selectedBackend: BackendOption = .parakeetMultilingual
     @State private var isDownloading = false
     @State private var downloadProgress: Double = 0
     @State private var downloadStatus: String = ""
@@ -205,9 +205,7 @@ struct OnboardingView: View {
     // MARK: - Step 2: Model Selection
 
     private var modelStep: some View {
-        VStack(spacing: MuesliTheme.spacing24) {
-            Spacer()
-
+        VStack(spacing: MuesliTheme.spacing16) {
             VStack(spacing: MuesliTheme.spacing8) {
                 Text("Choose your transcription model")
                     .font(MuesliTheme.title1())
@@ -218,35 +216,28 @@ struct OnboardingView: View {
                     .foregroundStyle(MuesliTheme.textSecondary)
                     .multilineTextAlignment(.center)
             }
+            .padding(.top, MuesliTheme.spacing24)
 
-            VStack(spacing: MuesliTheme.spacing12) {
-                modelCard(
-                    option: .whisper,
-                    title: "Whisper Small",
-                    size: "~150 MB",
-                    description: "Fast, English-optimized. Best for dictation."
-                )
-                modelCard(
-                    option: .qwen,
-                    title: "Qwen3 ASR",
-                    size: "~350 MB",
-                    description: "Multilingual, LLM-based. Experimental."
-                )
+            ScrollView {
+                VStack(spacing: MuesliTheme.spacing8) {
+                    ForEach(BackendOption.all, id: \.model) { option in
+                        modelCard(option: option)
+                    }
+                }
+                .padding(.horizontal, MuesliTheme.spacing32)
             }
-            .frame(width: 400)
 
             if let error = downloadError {
                 Text(error)
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.recording)
+                    .padding(.bottom, MuesliTheme.spacing8)
             }
-
-            Spacer()
         }
         .frame(maxWidth: .infinity)
     }
 
-    private func modelCard(option: BackendOption, title: String, size: String, description: String) -> some View {
+    private func modelCard(option: BackendOption) -> some View {
         let isSelected = selectedBackend == option
         return Button {
             if !isDownloading {
@@ -264,21 +255,21 @@ struct OnboardingView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text(title)
+                        Text(option.label)
                             .font(MuesliTheme.headline())
                             .foregroundStyle(MuesliTheme.textPrimary)
-                        Text(size)
+                        Text(option.sizeLabel)
                             .font(MuesliTheme.caption())
                             .foregroundStyle(MuesliTheme.textTertiary)
                     }
-                    Text(description)
+                    Text(option.description)
                         .font(MuesliTheme.caption())
                         .foregroundStyle(MuesliTheme.textSecondary)
                 }
 
                 Spacer()
             }
-            .padding(MuesliTheme.spacing16)
+            .padding(MuesliTheme.spacing12)
             .background(MuesliTheme.backgroundRaised)
             .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerMedium))
             .overlay(

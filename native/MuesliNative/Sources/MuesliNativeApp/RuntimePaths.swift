@@ -2,9 +2,9 @@ import Foundation
 
 struct RuntimePaths {
     let repoRoot: URL
-    let pythonExecutable: URL
-    let workerScript: URL
-    let pasteScript: URL
+    let pythonExecutable: URL?
+    let workerScript: URL?
+    let pasteScript: URL?
     let menuIcon: URL?
     let appIcon: URL?
     let bundlePath: URL?
@@ -13,14 +13,13 @@ struct RuntimePaths {
         let fileManager = FileManager.default
 
         if let bundleResource = Bundle.main.resourceURL {
+            // Check for runtime.json (Python-bundled app)
             let runtimeURL = bundleResource.appendingPathComponent("runtime.json")
             if fileManager.fileExists(atPath: runtimeURL.path) {
                 let data = try Data(contentsOf: runtimeURL)
                 let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 let isBundled = payload?["bundled"] as? String == "true" || payload?["bundled"] as? Bool == true
 
-                // When bundled, use the actual bundle Resources path (not the hardcoded one from runtime.json)
-                // so the app works from any install location, not just /Applications
                 let repoRoot = isBundled ? bundleResource : URL(fileURLWithPath: payload?["repo_root"] as? String ?? "")
 
                 let pythonExecutable: URL
@@ -31,27 +30,37 @@ struct RuntimePaths {
                     pythonExecutable = URL(fileURLWithPath: payload?["python_executable"] as? String ?? "")
                 }
 
-                let workerScript = bundleResource.appendingPathComponent("worker.py")
                 return RuntimePaths(
                     repoRoot: repoRoot,
                     pythonExecutable: pythonExecutable,
-                    workerScript: workerScript,
+                    workerScript: bundleResource.appendingPathComponent("worker.py"),
                     pasteScript: bundleResource.appendingPathComponent("paste_text.py"),
                     menuIcon: bundleResource.appendingPathComponent("menu_m_template.png"),
                     appIcon: bundleResource.appendingPathComponent("muesli.icns"),
                     bundlePath: Bundle.main.bundleURL
                 )
             }
+
+            // Native-only bundle (no Python runtime, no runtime.json)
+            return RuntimePaths(
+                repoRoot: bundleResource,
+                pythonExecutable: nil,
+                workerScript: nil,
+                pasteScript: nil,
+                menuIcon: bundleResource.appendingPathComponent("menu_m_template.png"),
+                appIcon: bundleResource.appendingPathComponent("muesli.icns"),
+                bundlePath: Bundle.main.bundleURL
+            )
         }
 
+        // Dev fallback: search up for bridge/worker.py
         var searchURL = URL(fileURLWithPath: fileManager.currentDirectoryPath)
         for _ in 0..<8 {
             let candidate = searchURL.appendingPathComponent("bridge/worker.py")
             if fileManager.fileExists(atPath: candidate.path) {
-                let pythonExecutable = searchURL.appendingPathComponent(".venv/bin/python")
                 return RuntimePaths(
                     repoRoot: searchURL,
-                    pythonExecutable: pythonExecutable,
+                    pythonExecutable: searchURL.appendingPathComponent(".venv/bin/python"),
                     workerScript: candidate,
                     pasteScript: searchURL.appendingPathComponent("bridge/paste_text.py"),
                     menuIcon: searchURL.appendingPathComponent("assets/menu_m_template.png"),
@@ -63,7 +72,7 @@ struct RuntimePaths {
         }
 
         throw NSError(domain: "MuesliRuntime", code: 1, userInfo: [
-            NSLocalizedDescriptionKey: "Could not locate repo root or bundled runtime metadata.",
+            NSLocalizedDescriptionKey: "Could not locate app bundle or repo root.",
         ])
     }
 }

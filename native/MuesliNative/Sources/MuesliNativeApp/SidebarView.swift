@@ -11,7 +11,7 @@ struct SidebarView: View {
                     MWaveformIcon(barCount: 9, spacing: 2)
                         .frame(width: 22, height: 22)
                         .foregroundStyle(MuesliTheme.accent)
-                    Text("Muesli")
+                    Text("muesli")
                         .font(MuesliTheme.title2())
                         .foregroundStyle(MuesliTheme.textPrimary)
                 }

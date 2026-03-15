@@ -22,9 +22,15 @@ final class PythonWorkerClient {
             return
         }
 
+        guard let pythonExec = runtime.pythonExecutable, let workerScript = runtime.workerScript else {
+            throw NSError(domain: "MuesliWorker", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Python runtime not available (native-only build).",
+            ])
+        }
+
         let process = Process()
-        process.executableURL = runtime.pythonExecutable
-        process.arguments = [runtime.workerScript.path]
+        process.executableURL = pythonExec
+        process.arguments = [workerScript.path]
         process.currentDirectoryURL = runtime.repoRoot
 
         var environment = ProcessInfo.processInfo.environment

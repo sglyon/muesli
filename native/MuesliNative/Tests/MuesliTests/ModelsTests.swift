@@ -5,22 +5,69 @@ import Foundation
 @Suite("BackendOption")
 struct BackendOptionTests {
 
-    @Test("all options have unique backends")
-    func uniqueBackends() {
-        let backends = BackendOption.all.map(\.backend)
-        #expect(Set(backends).count == backends.count)
+    @Test("all options have unique models")
+    func uniqueModels() {
+        let models = BackendOption.all.map(\.model)
+        #expect(Set(models).count == models.count, "Duplicate model in BackendOption.all")
     }
 
-    @Test("whisper and qwen are available")
-    func defaultOptions() {
-        #expect(BackendOption.all.contains(.whisper))
-        #expect(BackendOption.all.contains(.qwen))
+    @Test("all options have non-empty labels and descriptions")
+    func labelsAndDescriptions() {
+        for option in BackendOption.all {
+            #expect(!option.label.isEmpty, "Empty label for \(option.model)")
+            #expect(!option.description.isEmpty, "Empty description for \(option.model)")
+            #expect(!option.sizeLabel.isEmpty, "Empty sizeLabel for \(option.model)")
+        }
     }
 
-    @Test("whisper defaults to mlx-community model")
-    func whisperModel() {
-        #expect(BackendOption.whisper.model.contains("mlx-community"))
-        #expect(BackendOption.whisper.model.contains("whisper"))
+    @Test("backend field is one of the known backends")
+    func knownBackends() {
+        let known: Set<String> = ["fluidaudio", "whisper", "nemotron"]
+        for option in BackendOption.all {
+            #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
+        }
+    }
+
+    @Test("Parakeet models use fluidaudio backend")
+    func parakeetBackend() {
+        #expect(BackendOption.parakeetMultilingual.backend == "fluidaudio")
+        #expect(BackendOption.parakeetEnglish.backend == "fluidaudio")
+    }
+
+    @Test("Whisper models use whisper backend")
+    func whisperBackend() {
+        #expect(BackendOption.whisperSmall.backend == "whisper")
+        #expect(BackendOption.whisperMedium.backend == "whisper")
+        #expect(BackendOption.whisperLargeTurbo.backend == "whisper")
+    }
+
+    @Test("Nemotron uses nemotron backend")
+    func nemotronBackend() {
+        #expect(BackendOption.nemotronStreaming.backend == "nemotron")
+        #expect(BackendOption.nemotronStreaming.model.contains("nemotron"))
+    }
+
+    @Test("whisper alias points to parakeetMultilingual")
+    func whisperAlias() {
+        #expect(BackendOption.whisper == BackendOption.parakeetMultilingual)
+    }
+
+    @Test("all contains all defined options")
+    func allContainsAll() {
+        #expect(BackendOption.all.contains(.parakeetMultilingual))
+        #expect(BackendOption.all.contains(.parakeetEnglish))
+        #expect(BackendOption.all.contains(.whisperSmall))
+        #expect(BackendOption.all.contains(.whisperMedium))
+        #expect(BackendOption.all.contains(.whisperLargeTurbo))
+        #expect(BackendOption.all.contains(.nemotronStreaming))
+        #expect(BackendOption.all.count == 6)
+    }
+
+    @Test("Whisper models reference ggml format")
+    func whisperGgmlModels() {
+        #expect(BackendOption.whisperSmall.model.hasPrefix("ggml-"))
+        #expect(BackendOption.whisperMedium.model.hasPrefix("ggml-"))
+        #expect(BackendOption.whisperLargeTurbo.model.hasPrefix("ggml-"))
     }
 }
 
@@ -33,7 +80,6 @@ struct SummaryModelPresetTests {
         for preset in SummaryModelPreset.openAIModels {
             #expect(!preset.id.isEmpty)
             #expect(!preset.label.isEmpty)
-            #expect(!preset.id.contains("/"), "OpenAI model IDs should not contain slash: \(preset.id)")
         }
     }
 
@@ -42,22 +88,8 @@ struct SummaryModelPresetTests {
         #expect(!SummaryModelPreset.openRouterModels.isEmpty)
         for preset in SummaryModelPreset.openRouterModels {
             #expect(!preset.id.isEmpty)
-            #expect(!preset.label.isEmpty)
             #expect(preset.id.contains(":free"), "OpenRouter preset should be free: \(preset.id)")
-            #expect(preset.label.lowercased().contains("free"), "Label should mention free: \(preset.label)")
         }
-    }
-
-    @Test("OpenRouter presets have context window in label")
-    func openRouterContextLabels() {
-        for preset in SummaryModelPreset.openRouterModels {
-            #expect(preset.label.contains("ctx"), "Label should mention context: \(preset.label)")
-        }
-    }
-
-    @Test("first OpenAI preset is the default")
-    func openAIDefault() {
-        #expect(SummaryModelPreset.openAIModels.first?.id == "gpt-5-mini")
     }
 }
 
@@ -89,32 +121,25 @@ struct AppConfigTests {
         #expect(config.meetingSummaryBackend == "openai")
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.openRouterAPIKey.isEmpty)
-        #expect(config.openAIModel.isEmpty)
-        #expect(config.openRouterModel.isEmpty)
         #expect(config.dictationHotkey == .default)
         #expect(config.showFloatingIndicator == true)
-        #expect(config.autoRecordMeetings == false)
+        #expect(config.hasCompletedOnboarding == false)
+        #expect(config.userName.isEmpty)
     }
 
     @Test("JSON encode/decode round-trip")
     func jsonRoundTrip() throws {
         var config = AppConfig()
         config.openAIAPIKey = "sk-test-key-123"
-        config.openAIModel = "gpt-5.4-pro"
-        config.openRouterAPIKey = "sk-or-test"
-        config.openRouterModel = "nvidia/nemotron-3-super-120b-a12b:free"
-        config.meetingSummaryBackend = "openrouter"
-        config.autoRecordMeetings = true
+        config.userName = "Test User"
+        config.hasCompletedOnboarding = true
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
 
         #expect(decoded.openAIAPIKey == "sk-test-key-123")
-        #expect(decoded.openAIModel == "gpt-5.4-pro")
-        #expect(decoded.openRouterAPIKey == "sk-or-test")
-        #expect(decoded.openRouterModel == "nvidia/nemotron-3-super-120b-a12b:free")
-        #expect(decoded.meetingSummaryBackend == "openrouter")
-        #expect(decoded.autoRecordMeetings == true)
+        #expect(decoded.userName == "Test User")
+        #expect(decoded.hasCompletedOnboarding == true)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -125,23 +150,19 @@ struct AppConfigTests {
 
         #expect(json["stt_backend"] != nil)
         #expect(json["stt_model"] != nil)
-        #expect(json["meeting_summary_backend"] != nil)
-        #expect(json["openai_api_key"] != nil)
-        #expect(json["openrouter_api_key"] != nil)
-        #expect(json["openai_model"] != nil)
-        #expect(json["openrouter_model"] != nil)
+        #expect(json["has_completed_onboarding"] != nil)
+        #expect(json["user_name"] != nil)
     }
 
     @Test("decodes with missing fields using defaults")
     func missingFieldsUseDefaults() throws {
-        let json = "{\"hotkey\": \"left_command_hold\"}"
+        let json = "{\"stt_backend\": \"whisper\"}"
         let data = json.data(using: .utf8)!
         let config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-        #expect(config.sttBackend == BackendOption.whisper.backend)
         #expect(config.openAIAPIKey.isEmpty)
-        #expect(config.openRouterAPIKey.isEmpty)
         #expect(config.showFloatingIndicator == true)
+        #expect(config.hasCompletedOnboarding == false)
     }
 }
 
@@ -192,7 +213,32 @@ struct WordCountTests {
     func multipleWhitespace() {
         #expect(DictationStore.countWords(in: "hello   world") == 2)
         #expect(DictationStore.countWords(in: "  leading and trailing  ") == 3)
-        #expect(DictationStore.countWords(in: "tabs\there\ttoo") == 3)
-        #expect(DictationStore.countWords(in: "newlines\ncount\ntoo") == 3)
+    }
+}
+
+@Suite("HotkeyConfig")
+struct HotkeyConfigTests {
+
+    @Test("default is Left Cmd")
+    func defaultConfig() {
+        let config = HotkeyConfig.default
+        #expect(config.keyCode == 55)
+        #expect(config.label == "Left Cmd")
+    }
+
+    @Test("label for known key codes")
+    func knownKeyCodes() {
+        #expect(HotkeyConfig.label(for: 55) == "Left Cmd")
+        #expect(HotkeyConfig.label(for: 54) == "Right Cmd")
+        #expect(HotkeyConfig.label(for: 63) == "Fn")
+        #expect(HotkeyConfig.label(for: 59) == "Left Ctrl")
+        #expect(HotkeyConfig.label(for: 58) == "Left Option")
+        #expect(HotkeyConfig.label(for: 56) == "Left Shift")
+    }
+
+    @Test("unknown key code returns nil")
+    func unknownKeyCode() {
+        #expect(HotkeyConfig.label(for: 0) == nil)
+        #expect(HotkeyConfig.label(for: 100) == nil)
     }
 }

@@ -7,8 +7,7 @@ final class MuesliController: NSObject {
     private let runtime: RuntimePaths
     private let configStore = ConfigStore()
     private let dictationStore = DictationStore()
-    private let workerClient: PythonWorkerClient
-    private let transcriptionCoordinator: TranscriptionCoordinator
+    private let transcriptionCoordinator = TranscriptionCoordinator()
     private let hotkeyMonitor = HotkeyMonitor()
     private let recorder = MicrophoneRecorder()
     private let indicator: FloatingIndicatorController
@@ -42,8 +41,6 @@ final class MuesliController: NSObject {
         self.selectedMeetingSummaryBackend = MeetingSummaryBackendOption.all.first(where: {
             $0.backend == loadedConfig.meetingSummaryBackend
         }) ?? .openAI
-        self.workerClient = PythonWorkerClient(runtime: runtime)
-        self.transcriptionCoordinator = TranscriptionCoordinator(workerClient: workerClient)
         self.indicator = FloatingIndicatorController(configStore: configStore)
         super.init()
     }
@@ -64,12 +61,6 @@ final class MuesliController: NSObject {
             if !files.isEmpty {
                 fputs("[muesli-native] cleaned up \(files.count) leftover temp audio files\n", stderr)
             }
-        }
-
-        do {
-            try workerClient.start()
-        } catch {
-            fputs("[muesli-native] worker start failed: \(error)\n", stderr)
         }
 
         hotkeyMonitor.targetKeyCode = config.dictationHotkey.keyCode
@@ -276,10 +267,10 @@ final class MuesliController: NSObject {
     }
 
     func downloadModelForOnboarding(_ backend: BackendOption, progress: @escaping (Double, String?) -> Void) async throws -> Bool {
-        let result = try await workerClient.downloadModelAsync(option: backend, progress: progress)
-        let alreadyCached = result["already_cached"] as? Bool ?? false
-        await transcriptionCoordinator.preload(backend: backend)
-        return alreadyCached
+        progress(0.0, "Downloading \(backend.label)...")
+        await transcriptionCoordinator.preload(backend: backend, progress: progress)
+        progress(1.0, nil)
+        return false
     }
 
     func completeOnboarding(userName: String, backend: BackendOption, hotkey: HotkeyConfig, summaryBackend: MeetingSummaryBackendOption?, apiKey: String?) {

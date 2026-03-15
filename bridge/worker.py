@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from transcribe.backends import (
+    DEFAULT_PARAKEET_MODEL,
     DEFAULT_QWEN_MODEL,
     DEFAULT_WHISPER_MODEL,
     create_backend,
@@ -39,6 +40,8 @@ class SpeechWorker:
             return backend_name, model or DEFAULT_WHISPER_MODEL
         if backend_name == "qwen":
             return backend_name, model or DEFAULT_QWEN_MODEL
+        if backend_name == "parakeet":
+            return backend_name, model or DEFAULT_PARAKEET_MODEL
         raise WorkerError("UNSUPPORTED_BACKEND", f"Unsupported backend: {backend_name}")
 
     def _ensure_loaded(self, backend: str | None, model: str | None):

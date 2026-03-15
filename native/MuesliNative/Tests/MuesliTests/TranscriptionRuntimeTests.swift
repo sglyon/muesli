@@ -37,3 +37,19 @@ struct SpeechTranscriptionResultTests {
         #expect(result.segments.isEmpty)
     }
 }
+
+@Suite("TranscriptionCoordinator routing")
+struct TranscriptionCoordinatorTests {
+
+    @Test("coordinator initializes without crash")
+    func initDoesNotCrash() {
+        let _ = TranscriptionCoordinator()
+    }
+
+    @Test("backend routing covers all known backends")
+    func allBackendsCovered() {
+        let backends = Set(BackendOption.all.map(\.backend))
+        let expected: Set<String> = ["fluidaudio", "whisper", "nemotron"]
+        #expect(backends == expected, "BackendOption.all backends should match expected set")
+    }
+}

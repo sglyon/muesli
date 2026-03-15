@@ -8,6 +8,7 @@ import numpy as np
 
 DEFAULT_WHISPER_MODEL = "mlx-community/whisper-small.en-mlx"
 DEFAULT_QWEN_MODEL = "mlx-community/Qwen3-ASR-0.6B-4bit"
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
 
 class SpeechBackend(Protocol):
@@ -80,9 +81,10 @@ class WhisperBackend:
 
 
 @dataclass
-class QwenBackend:
+class MlxAudioBackend:
+    """Backend for models supported by mlx-audio (Qwen ASR, Parakeet, etc.)."""
     model_repo: str = DEFAULT_QWEN_MODEL
-    name: str = "qwen"
+    name: str = "mlx_audio"
 
     def __post_init__(self):
         self._model = None
@@ -111,9 +113,13 @@ class QwenBackend:
         return _normalize_segments(getattr(result, "segments", []))
 
 
+# Keep QwenBackend as alias for backward compat
+QwenBackend = MlxAudioBackend
+
+
 def create_backend(name: str, model_repo: str) -> SpeechBackend:
     if name == "whisper":
         return WhisperBackend(model_repo=model_repo)
-    if name == "qwen":
-        return QwenBackend(model_repo=model_repo)
+    if name in ("qwen", "parakeet", "mlx_audio"):
+        return MlxAudioBackend(model_repo=model_repo)
     raise ValueError(f"Unsupported STT backend: {name}")

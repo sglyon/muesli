@@ -20,11 +20,16 @@ actor FluidAudioTranscriber {
 
     /// Downloads models (if needed) and initializes the ASR manager.
     /// - Parameter version: .v3 for multilingual (25 langs), .v2 for English-only
-    func loadModels(version: AsrModelVersion = .v3) async throws {
+    func loadModels(version: AsrModelVersion = .v3, progress: ((Double, String?) -> Void)? = nil) async throws {
         if loadedVersion == version, asrManager != nil { return }
 
         fputs("[fluidaudio] downloading/loading models (version: \(version))...\n", stderr)
-        let models = try await AsrModels.downloadAndLoad(version: version)
+        let models = try await AsrModels.downloadAndLoad(version: version) { downloadProgress in
+            let fraction = downloadProgress.fractionCompleted
+            DispatchQueue.main.async {
+                progress?(fraction, "Downloading Parakeet model...")
+            }
+        }
         let manager = AsrManager(config: .default)
         try await manager.initialize(models: models)
         self.asrManager = manager
