@@ -6,8 +6,8 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
             HStack(spacing: MuesliTheme.spacing12) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 22, weight: .medium))
+                MWaveformIcon(barCount: 9, spacing: 2)
+                    .frame(width: 22, height: 22)
                     .foregroundStyle(MuesliTheme.accent)
                 Text("Muesli")
                     .font(MuesliTheme.title2())
