@@ -4,25 +4,34 @@ import SwiftUI
 /// that naturally suggests the letter "M". Uses |sin(πx)| over two
 /// half-cycles so the peaks emerge organically, like a real audio signal.
 struct MWaveformIcon: View {
-    var barCount: Int = 13
+    var barCount: Int = 9
     var spacing: CGFloat = 1.5
 
-    // Sinusoidal M-envelope: |sin(πx)| sampled over [0, 2) gives two
-    // smooth peaks with organic transitions. Scaled so min ~0.30, max 1.0.
-    private static let multipliers: [CGFloat] = [
-        0.30, 0.58, 0.85, 1.0, 0.90, 0.60, 0.30, 0.60, 0.90, 1.0, 0.85, 0.58, 0.30
+    // Symmetric M-envelope: two peaks with a valley in the center.
+    // Each subset is symmetric around the middle bar.
+    private static let presets: [Int: [CGFloat]] = [
+        5:  [0.85, 1.0, 0.35, 1.0, 0.85],
+        7:  [0.45, 0.85, 1.0, 0.35, 1.0, 0.85, 0.45],
+        9:  [0.30, 0.60, 0.90, 1.0, 0.35, 1.0, 0.90, 0.60, 0.30],
+        11: [0.25, 0.50, 0.80, 1.0, 0.65, 0.30, 0.65, 1.0, 0.80, 0.50, 0.25],
+        13: [0.30, 0.50, 0.75, 0.95, 1.0, 0.65, 0.30, 0.65, 1.0, 0.95, 0.75, 0.50, 0.30],
     ]
+
+    private var multipliers: [CGFloat] {
+        Self.presets[barCount] ?? Self.presets[9]!
+    }
 
     var body: some View {
         GeometryReader { geo in
-            let count = min(barCount, Self.multipliers.count)
+            let mults = multipliers
+            let count = mults.count
             let totalSpacing = spacing * CGFloat(count - 1)
             let barWidth = (geo.size.width - totalSpacing) / CGFloat(count)
             let cornerRadius = barWidth / 2
 
             HStack(alignment: .center, spacing: spacing) {
                 ForEach(0..<count, id: \.self) { i in
-                    let barHeight = max(geo.size.height * Self.multipliers[i], barWidth)
+                    let barHeight = max(geo.size.height * mults[i], barWidth)
                     RoundedRectangle(cornerRadius: cornerRadius)
                         .frame(width: barWidth, height: barHeight)
                 }
