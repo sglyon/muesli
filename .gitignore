@@ -1,18 +1,54 @@
+# Python
 .venv/
 .venv-no-torch/
 __pycache__/
 *.pyc
-.DS_Store
-native/system_audio
-*.wav
-*.sqlite
-*.db
 .coverage
-tmp-no-torch-test/
+
+# macOS
+.DS_Store
+*.profraw
+
+# Build artifacts
 dist-native/
-native/MuesliNative/.build-direct/
 native/MuesliNative/.build/
+native/MuesliNative/.build-direct/
+native/MuesliNative/.xcodebuild/
 build/
 dist/
 output/
 tmp/
+tmp-no-torch-test/
+tmp-install/
+
+# Audio/data files
+*.wav
+*.sqlite
+*.db
+
+# Signing/certificates
+developerID_application.cer
+dist-notary/
+
+# Legacy files (kept locally, not tracked)
+CLAUDE.md
+Context/
+app.py
+main.py
+setup.py
+ui/
+native/system_audio.swift
+scripts/postprocess_py2app_bundle.sh
+scripts/setup_no_torch_env.sh
+requirements-no-torch.txt
+requirements-no-torch-dev.txt
+research/
+site/
+assets/muesli_app_icon_traced*.svg
+assets/menu_mic_template.png
+context.md
+
+# IDE
+.claude/
+*.swp
+*~
