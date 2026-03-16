@@ -266,7 +266,6 @@ final class FloatingIndicatorController {
                     textLabel.animator().alphaValue = 0
                     textLabel.isHidden = true
 
-                    addStopLayer(in: targetFrame.size)
                 } else {
                     // Hold dictation: hide labels entirely, waveform replaces
                     iconLabel.animator().alphaValue = 0
@@ -295,7 +294,8 @@ final class FloatingIndicatorController {
             if isMeetingRecording {
                 startWaveformAnimation(in: targetFrame.size, xOffset: 26, barCount: 4)
             } else if isToggleDictation {
-                startWaveformAnimation(in: targetFrame.size, xOffset: 28, rightPadding: 28)
+                startWaveformAnimation(in: targetFrame.size, xOffset: 24, rightPadding: 24)
+                addStopLayer(in: targetFrame.size)
             } else {
                 startWaveformAnimation(in: targetFrame.size)
             }
