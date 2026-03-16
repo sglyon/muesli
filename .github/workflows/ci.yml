@@ -4,8 +4,14 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths:
+      - 'native/**'
+      - '.github/workflows/ci.yml'
   push:
     branches: [main]
+    paths:
+      - 'native/**'
+      - '.github/workflows/ci.yml'
 
 jobs:
   build-and-test:
@@ -21,3 +27,18 @@ jobs:
 
       - name: Run tests
         run: swift test --package-path native/MuesliNative
+
+  # Gate job for branch protection — succeeds if build-and-test passes or was skipped
+  ci-gate:
+    if: always()
+    needs: [build-and-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        run: |
+          if [[ "${{ needs.build-and-test.result }}" =~ ^(success|skipped)$ ]]; then
+            echo "CI passed (build-and-test: ${{ needs.build-and-test.result }})"
+          else
+            echo "CI failed (build-and-test: ${{ needs.build-and-test.result }})"
+            exit 1
+          fi
