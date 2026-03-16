@@ -86,6 +86,21 @@ final class MeetingSession {
         fputs("[meeting] started with \(chunkInterval)s chunk interval\n", stderr)
     }
 
+    /// Abandon the recording — stop everything, delete temp files, don't transcribe.
+    func discard() {
+        isRecording = false
+        chunkTimer?.invalidate()
+        chunkTimer = nil
+        if let url = micRecorder.stop() {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if let url = systemAudioRecorder.stop() {
+            try? FileManager.default.removeItem(at: url)
+        }
+        accumulatedMicSegments.removeAll()
+        fputs("[meeting] recording discarded\n", stderr)
+    }
+
     func stop() async throws -> MeetingSessionResult {
         isRecording = false
         let meetingStart = self.startTime ?? Date()

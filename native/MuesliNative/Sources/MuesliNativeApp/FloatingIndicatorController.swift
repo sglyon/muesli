@@ -55,11 +55,17 @@ private final class HoverIndicatorView: NSView {
         if didDrag {
             owner?.isDragging = false
             owner?.savePosition()
+        } else if event.modifierFlags.contains(.option) {
+            owner?.handleOptionClick()
         } else {
             owner?.handleClick()
         }
         dragOrigin = nil
         didDrag = false
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        owner?.handleOptionClick()
     }
 }
 
@@ -80,6 +86,7 @@ final class FloatingIndicatorController {
     fileprivate var isDragging = false
     var powerProvider: (() -> Float)?
     var onStopMeeting: (() -> Void)?
+    var onDiscardMeeting: (() -> Void)?
     var hotkeyLabel: String = "Left Cmd"
 
     init(configStore: ConfigStore) {
@@ -93,6 +100,28 @@ final class FloatingIndicatorController {
             onStopMeeting?()
         } else if state == .recording {
             onStopToggleDictation?()
+        }
+    }
+
+    func handleOptionClick() {
+        if isMeetingRecording {
+            showDiscardConfirmation()
+        }
+    }
+
+    private func showDiscardConfirmation() {
+        let alert = NSAlert()
+        alert.messageText = "Discard recording?"
+        alert.informativeText = "This will stop the meeting recording and delete all captured audio. This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        // Make the discard button red-tinted
+        alert.buttons.first?.hasDestructiveAction = true
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            onDiscardMeeting?()
         }
     }
 

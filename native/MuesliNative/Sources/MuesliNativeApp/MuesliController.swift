@@ -74,6 +74,7 @@ final class MuesliController: NSObject {
         hotkeyMonitor.start()
         indicator.hotkeyLabel = config.dictationHotkey.label
         indicator.onStopMeeting = { [weak self] in self?.stopMeetingRecording() }
+        indicator.onDiscardMeeting = { [weak self] in self?.discardMeetingRecording() }
         indicator.onStopToggleDictation = { [weak self] in
             self?.hotkeyMonitor.stopToggleMode()
         }
@@ -468,6 +469,31 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] failed to start meeting: \(error)\n", stderr)
             setState(.idle)
         }
+    }
+
+    @objc func discardMeetingWithConfirmation() {
+        let alert = NSAlert()
+        alert.messageText = "Discard recording?"
+        alert.informativeText = "This will stop the meeting recording and delete all captured audio. This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        if alert.runModal() == .alertFirstButtonReturn {
+            discardMeetingRecording()
+        }
+    }
+
+    func discardMeetingRecording() {
+        guard let activeMeetingSession else { return }
+        activeMeetingSession.discard()
+        self.activeMeetingSession = nil
+        indicator.setMeetingRecording(false, config: config)
+        micActivityMonitor.resumeAfterCooldown()
+        setState(.idle)
+        statusBarController?.refresh()
+        syncAppState()
+        fputs("[muesli-native] meeting recording discarded\n", stderr)
     }
 
     func stopMeetingRecording() {
