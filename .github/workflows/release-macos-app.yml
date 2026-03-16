@@ -2,6 +2,11 @@ name: Build & Release macOS App
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the beta artifact (for example 0.3.0-beta.1)"
+        required: false
+        type: string
   push:
     tags:
       - "v*"
@@ -17,6 +22,47 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Compute release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            TAG_NAME="${GITHUB_REF_NAME}"
+            RELEASE_TITLE="Muesli ${VERSION}"
+            PRERELEASE="false"
+            RELEASE_NOTES=$'Native macOS app - dictation + meeting transcription on Apple Silicon.\n\nNote: This CI build is unsigned and unnotarized. Use it only for trusted testing.'
+          else
+            VERSION="${{ github.event.inputs.version }}"
+            if [[ -z "$VERSION" ]]; then
+              VERSION="0.0.0-beta.${GITHUB_RUN_NUMBER}"
+            fi
+            TAG_NAME="beta-${VERSION//[^A-Za-z0-9._-]/-}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+            RELEASE_TITLE="Muesli Beta ${VERSION}"
+            PRERELEASE="true"
+            RELEASE_NOTES=$'Trusted-tester build for Muesli.\n\nThis build is unsigned and unnotarized. Testers should move the app to /Applications and may need to use System Settings > Privacy & Security > Open Anyway on first launch.'
+          fi
+
+          ASSET_SUFFIX=""
+          if [[ "$PRERELEASE" == "true" ]]; then
+            ASSET_SUFFIX="-unnotarized"
+          fi
+
+          APP_ZIP="dist/Muesli-${VERSION}${ASSET_SUFFIX}.zip"
+          DMG_PATH="dist/Muesli-${VERSION}${ASSET_SUFFIX}.dmg"
+
+          {
+            echo "version=$VERSION"
+            echo "tag_name=$TAG_NAME"
+            echo "release_title=$RELEASE_TITLE"
+            echo "prerelease=$PRERELEASE"
+            echo "app_zip=$APP_ZIP"
+            echo "dmg_path=$DMG_PATH"
+            echo "release_notes<<EOF"
+            echo "$RELEASE_NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run tests
         run: swift test --package-path native/MuesliNative
@@ -36,8 +82,7 @@ jobs:
           cp assets/muesli.icns "$APP_DIR/Contents/Resources/"
           [ -d assets/fonts ] && cp -R assets/fonts "$APP_DIR/Contents/Resources/fonts"
 
-          VERSION="${GITHUB_REF_NAME#v}"
-          [ -z "$VERSION" ] && VERSION="0.0.0-dev"
+          VERSION="${{ steps.meta.outputs.version }}"
 
           cat > "$APP_DIR/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -62,33 +107,52 @@ jobs:
           </plist>
           PLIST
 
+      - name: Package app zip
+        run: |
+          APP_ZIP="${{ steps.meta.outputs.app_zip }}"
+          mkdir -p "$(dirname "$APP_ZIP")"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent dist/Muesli.app "$APP_ZIP"
+
       - name: Create DMG
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          [ -z "$VERSION" ] && VERSION="0.0.0-dev"
           STAGING=$(mktemp -d)
           cp -R dist/Muesli.app "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
-          hdiutil create -volname "Muesli" -srcfolder "$STAGING" -ov -format UDZO "dist/Muesli-${VERSION}.dmg"
+          hdiutil create -volname "Muesli" -srcfolder "$STAGING" -ov -format UDZO "${{ steps.meta.outputs.dmg_path }}"
           rm -rf "$STAGING"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: Muesli-macos
-          path: dist/Muesli-*.dmg
+          path: |
+            ${{ steps.meta.outputs.dmg_path }}
+            ${{ steps.meta.outputs.app_zip }}
           compression-level: 0
 
-      - name: Publish release asset
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish GitHub release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          DMG="dist/Muesli-${VERSION}.dmg"
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" \
-              --title "Muesli ${VERSION}" \
-              --notes "Native macOS app — dictation + meeting transcription on Apple Silicon. **Note:** This CI build is unsigned. For the signed+notarized release, download from the pinned release."
+          TAG_NAME="${{ steps.meta.outputs.tag_name }}"
+          RELEASE_TITLE="${{ steps.meta.outputs.release_title }}"
+          DMG="${{ steps.meta.outputs.dmg_path }}"
+          APP_ZIP="${{ steps.meta.outputs.app_zip }}"
+          NOTES_FILE="$(mktemp)"
+          cat > "$NOTES_FILE" <<'EOF'
+          ${{ steps.meta.outputs.release_notes }}
+          EOF
+
+          if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            GH_ARGS=(
+              "$TAG_NAME"
+              --title "$RELEASE_TITLE"
+              --notes-file "$NOTES_FILE"
+              --target "$GITHUB_SHA"
+            )
+            if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
+              GH_ARGS+=(--prerelease)
+            fi
+            gh release create "${GH_ARGS[@]}"
           fi
-          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+          gh release upload "$TAG_NAME" "$DMG" "$APP_ZIP" --clobber
