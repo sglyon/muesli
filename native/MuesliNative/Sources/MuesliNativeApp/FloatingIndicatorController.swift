@@ -261,7 +261,13 @@ final class FloatingIndicatorController {
                     iconLabel.stringValue = "\u{2715}"  // ✕
                     iconLabel.textColor = .white.withAlphaComponent(0.45)
                     iconLabel.font = NSFont.systemFont(ofSize: 7, weight: .semibold)
-                    iconLabel.frame = NSRect(x: 10, y: (targetFrame.height - 12) / 2, width: 12, height: 12)
+                    let xSize: CGFloat = 10
+                    iconLabel.frame = NSRect(
+                        x: 7,
+                        y: floor((targetFrame.height - xSize) / 2) - 1,
+                        width: xSize,
+                        height: xSize
+                    )
 
                     textLabel.animator().alphaValue = 0
                     textLabel.isHidden = true
@@ -349,8 +355,8 @@ final class FloatingIndicatorController {
         let sq: CGFloat = 6
         let stop = CALayer()
         stop.frame = CGRect(
-            x: size.width - sq - 11,
-            y: (size.height - sq) / 2,
+            x: size.width - sq - 8,
+            y: floor((size.height - sq) / 2),
             width: sq,
             height: sq
         )
