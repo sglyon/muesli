@@ -8,21 +8,31 @@ on:
     branches: [main]
 
 jobs:
-  # Detect which files changed — runs on every trigger
+  # Detect which files changed — no third-party actions
   changes:
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: read
     outputs:
-      native: ${{ steps.filter.outputs.native }}
+      native: ${{ steps.check.outputs.native }}
     steps:
-      - uses: dorny/paths-filter@v3
-        id: filter
+      - uses: actions/checkout@v4
         with:
-          filters: |
-            native:
-              - 'native/**'
-              - '.github/workflows/ci.yml'
+          fetch-depth: 2
+      - name: Check for native changes
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only HEAD^1 HEAD -- 'native/' '.github/workflows/ci.yml')
+          else
+            FILES=$(git diff --name-only HEAD~1 HEAD -- 'native/' '.github/workflows/ci.yml')
+          fi
+          if [ -n "$FILES" ]; then
+            echo "native=true" >> "$GITHUB_OUTPUT"
+            echo "Native files changed:"
+            echo "$FILES"
+          else
+            echo "native=false" >> "$GITHUB_OUTPUT"
+            echo "No native files changed — skipping build"
+          fi
 
   # Swift build + tests — only when native code changes
   build-and-test:
@@ -41,7 +51,7 @@ jobs:
         run: swift test --package-path native/MuesliNative
 
   # Gate job — always runs, always reports a status
-  # Use THIS as the only required check in branch protection
+  # This is the only required check in branch protection
   ci-gate:
     if: always()
     needs: [changes, build-and-test]
