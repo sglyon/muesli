@@ -6,7 +6,6 @@ PACKAGE_DIR="$ROOT/native/MuesliNative"
 DIST_DIR="$ROOT/dist-native"
 INSTALL_DIR="${MUESLI_INSTALL_DIR:-/Applications}"
 BUILD_CONFIG="${1:-release}"
-PYTHON_BIN="$ROOT/.venv/bin/python"
 APP_BINARY="MuesliNativeApp"
 APP_NAME="${MUESLI_APP_NAME:-Muesli}"
 APP_DISPLAY_NAME="${MUESLI_DISPLAY_NAME:-$APP_NAME}"
@@ -18,12 +17,6 @@ STAGED_APP_DIR="$DIST_DIR/$APP_BUNDLE_NAME"
 APP_DIR="$INSTALL_DIR/$APP_BUNDLE_NAME"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)"
 SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
-
-if [[ ! -x "$PYTHON_BIN" ]]; then
-  echo "Error: Python venv not found at $PYTHON_BIN" >&2
-  echo "Run: python3 -m venv .venv && .venv/bin/pip install mlx-whisper" >&2
-  exit 1
-fi
 
 mkdir -p "$DIST_DIR"
 
@@ -46,44 +39,11 @@ mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
 cp "$APP_BIN" "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 
+# Bundle assets
 cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
 cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
 if [[ -d "$ROOT/assets/fonts" ]]; then
   ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
-fi
-
-if [[ -f "$ROOT/bridge/worker.py" ]]; then
-  cp "$ROOT/bridge/worker.py" "$STAGED_APP_DIR/Contents/Resources/worker.py"
-fi
-if [[ -f "$ROOT/bridge/paste_text.py" ]]; then
-  cp "$ROOT/bridge/paste_text.py" "$STAGED_APP_DIR/Contents/Resources/paste_text.py"
-fi
-
-# Bundle the transcribe module (required by worker.py)
-if [[ -d "$ROOT/transcribe" ]]; then
-  mkdir -p "$STAGED_APP_DIR/Contents/Resources/transcribe"
-  cp "$ROOT/transcribe/"*.py "$STAGED_APP_DIR/Contents/Resources/transcribe/"
-fi
-
-# Bundle Python runtime if available, otherwise use system venv
-if [[ -d "$DIST_DIR/python-runtime" ]]; then
-  echo "Bundling Python runtime from $DIST_DIR/python-runtime..."
-  ditto "$DIST_DIR/python-runtime" "$STAGED_APP_DIR/Contents/Resources/python-runtime"
-  cat > "$STAGED_APP_DIR/Contents/Resources/runtime.json" <<JSON
-{
-  "repo_root": "/Applications/$APP_BUNDLE_NAME/Contents/Resources",
-  "python_executable": "python-runtime/bin/python3",
-  "bundled": true
-}
-JSON
-else
-  echo "No bundled Python runtime found at $DIST_DIR/python-runtime; using system venv."
-  cat > "$STAGED_APP_DIR/Contents/Resources/runtime.json" <<JSON
-{
-  "repo_root": "$ROOT",
-  "python_executable": "$PYTHON_BIN"
-}
-JSON
 fi
 
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
@@ -98,9 +58,9 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleVersion</key>
-  <string>0.2.0</string>
+  <string>0.3.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.0</string>
+  <string>0.3.0</string>
   <key>CFBundleExecutable</key>
   <string>$APP_EXECUTABLE_NAME</string>
   <key>CFBundlePackageType</key>
@@ -147,4 +107,4 @@ codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR
 
 rm -rf "$STAGED_APP_DIR"
 
-echo "Installed $APP_DIR"
+echo "Installed $APP_DIR ($(du -sh "$APP_DIR" | cut -f1))"
