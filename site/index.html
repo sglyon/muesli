@@ -149,24 +149,25 @@
 
     .get {
       display: inline-block;
-      font-family: var(--mono);
-      font-weight: 400;
-      font-size: 0.78rem;
-      color: var(--green);
+      font-family: var(--system);
+      font-weight: 600;
+      font-size: 0.88rem;
+      color: #fff;
       text-decoration: none;
       margin-top: 30px;
-      padding: 10px 30px;
-      border: 1px solid rgba(52,211,153,0.2);
-      border-radius: 4px;
-      letter-spacing: 0.04em;
-      transition: all 0.4s ease;
+      padding: 12px 36px;
+      background: var(--green);
+      border: none;
+      border-radius: 8px;
+      letter-spacing: 0.01em;
+      transition: all 0.3s ease;
       opacity: 0;
       animation: fadeUp 2s ease 1.15s forwards;
     }
     .get:hover {
-      background: rgba(52,211,153,0.07);
-      border-color: rgba(52,211,153,0.45);
-      box-shadow: 0 0 40px rgba(52,211,153,0.06);
+      background: #2ee8a5;
+      box-shadow: 0 0 30px rgba(52,211,153,0.25);
+      transform: translateY(-1px);
     }
 
     /* ── header nav ── */
