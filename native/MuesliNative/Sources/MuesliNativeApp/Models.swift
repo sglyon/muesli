@@ -70,20 +70,21 @@ struct BackendOption: Equatable {
     static let all: [BackendOption] = [
         .parakeetMultilingual, .parakeetEnglish,
         .whisperSmall, .whisperMedium, .whisperLargeTurbo,
+        .qwen3Asr,
     ]
 
     static let qwen3Asr = BackendOption(
         backend: "qwen",
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
-        sizeLabel: "~180 MB",
-        description: "Multilingual, 52 languages. CoreML autoregressive decoder on ANE.",
+        sizeLabel: "~900 MB",
+        description: "Multilingual, 52 languages. Slower than Parakeet (~2-3s). First use takes ~30s to warm up.",
         recommended: false
     )
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = [
-        .qwen3Asr, .nemotronStreaming,
+        .nemotronStreaming,
     ]
 }
 

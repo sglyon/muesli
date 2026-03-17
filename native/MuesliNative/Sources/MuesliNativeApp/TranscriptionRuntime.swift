@@ -17,6 +17,7 @@ actor TranscriptionCoordinator {
     private let fluidTranscriber = FluidAudioTranscriber()
     private let whisperTranscriber = WhisperCppTranscriber()
     private var _nemotronTranscriber: Any?
+    private var _qwen3Transcriber: Any?
     private var vadManager: VadManager?
     private var diarizerManager: DiarizerManager?
     private var activeBackend: String?
@@ -27,6 +28,14 @@ actor TranscriptionCoordinator {
             _nemotronTranscriber = NemotronStreamingTranscriber()
         }
         return _nemotronTranscriber as! NemotronStreamingTranscriber
+    }
+
+    @available(macOS 15, *)
+    private var qwen3Transcriber: Qwen3AsrTranscriber {
+        if _qwen3Transcriber == nil {
+            _qwen3Transcriber = Qwen3AsrTranscriber()
+        }
+        return _qwen3Transcriber as! Qwen3AsrTranscriber
     }
 
     func preload(backend: BackendOption, progress: ((Double, String?) -> Void)? = nil) async {
@@ -78,6 +87,16 @@ actor TranscriptionCoordinator {
                 }
             } else {
                 fputs("[muesli-native] Nemotron requires macOS 15+\n", stderr)
+            }
+        case "qwen":
+            if #available(macOS 15, *) {
+                do {
+                    try await qwen3Transcriber.loadModels(progress: progress)
+                } catch {
+                    fputs("[muesli-native] Qwen3 ASR preload failed: \(error)\n", stderr)
+                }
+            } else {
+                fputs("[muesli-native] Qwen3 ASR requires macOS 15+\n", stderr)
             }
         default:
             fputs("[muesli-native] unknown backend: \(backend.backend)\n", stderr)
@@ -139,6 +158,7 @@ actor TranscriptionCoordinator {
             await whisperTranscriber.shutdown()
             if #available(macOS 15, *) {
                 await nemotronTranscriber.shutdown()
+                await qwen3Transcriber.shutdown()
             }
         }
     }
@@ -165,6 +185,8 @@ actor TranscriptionCoordinator {
             return try await transcribeWithWhisperCpp(url: url)
         case "nemotron":
             return try await transcribeWithNemotron(url: url)
+        case "qwen":
+            return try await transcribeWithQwen3(url: url)
         default:
             return try await transcribeWithFluidAudio(url: url)
         }
@@ -197,6 +219,25 @@ actor TranscriptionCoordinator {
             text: text,
             segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
         )
+    }
+
+    // MARK: - Qwen3 ASR (Autoregressive CoreML on ANE)
+
+    private func transcribeWithQwen3(url: URL) async throws -> SpeechTranscriptionResult {
+        if #available(macOS 15, *) {
+            fputs("[muesli-native] transcribing with Qwen3 ASR: \(url.lastPathComponent)\n", stderr)
+            let result = try await qwen3Transcriber.transcribe(wavURL: url)
+            fputs("[muesli-native] Qwen3 ASR result: \(result.text.prefix(80)) (took \(String(format: "%.3f", result.processingTime))s)\n", stderr)
+            let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return SpeechTranscriptionResult(
+                text: text,
+                segments: text.isEmpty ? [] : [SpeechSegment(start: 0, end: 0, text: text)]
+            )
+        } else {
+            throw NSError(domain: "Muesli", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Qwen3 ASR requires macOS 15 or later.",
+            ])
+        }
     }
 
     // MARK: - Nemotron Streaming (RNNT CoreML on ANE)
