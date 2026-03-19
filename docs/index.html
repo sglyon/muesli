@@ -306,11 +306,14 @@
     <h1 class="name">muesli</h1>
     <p class="sub">free speech to text &middot; on-device local inference &middot; auto meeting transcriptions</p>
     <a class="get" href="https://github.com/pHequals7/muesli/releases/download/v0.5.3/Muesli-0.5.3.dmg">download for macOS</a>
-    <details style="margin-top:12px;font-size:11px;color:rgba(255,255,255,0.3);cursor:pointer;position:relative;z-index:10">
+    <details style="margin-top:12px;font-size:11px;color:rgba(255,255,255,0.5);cursor:pointer;position:relative;z-index:10">
       <summary style="list-style:none;-webkit-user-select:none;user-select:none">app won&rsquo;t open? &middot; troubleshooting</summary>
-      <p style="margin:10px 0 0;line-height:1.6;color:rgba(255,255,255,0.4);text-align:left;max-width:360px">
+      <p style="margin:10px 0 0;line-height:1.6;color:rgba(255,255,255,0.6);text-align:left;max-width:360px">
         If macOS says &ldquo;Muesli is damaged,&rdquo; open <b>System Settings &rarr; Privacy &amp; Security</b>, scroll down, and click <b>Open Anyway</b>. Or run in Terminal:<br>
-        <code style="display:inline-block;margin-top:6px;padding:4px 8px;background:rgba(255,255,255,0.06);border-radius:4px;font-size:11px;color:rgba(255,255,255,0.5)">sudo xattr -cr /Applications/Muesli.app</code>
+        <span style="display:inline-flex;align-items:center;gap:6px;margin-top:6px">
+          <code id="xattr-cmd" style="padding:4px 8px;background:rgba(255,255,255,0.08);border-radius:4px;font-size:11px;color:rgba(255,255,255,0.7)">sudo xattr -cr /Applications/Muesli.app</code>
+          <button onclick="navigator.clipboard.writeText(document.getElementById('xattr-cmd').textContent);this.textContent='copied';setTimeout(()=>this.textContent='copy',1500)" style="padding:3px 8px;font-size:10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);border-radius:4px;color:rgba(255,255,255,0.6);cursor:pointer">copy</button>
+        </span>
       </p>
     </details>
   </div>
