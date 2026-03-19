@@ -68,39 +68,63 @@ echo "  Installed to $APP_DIR"
 FLAGS=$(codesign -dvvv "$APP_DIR" 2>&1 | grep -o 'flags=0x[0-9a-f]*([^)]*)')
 echo "  Signature: $FLAGS"
 
-# --- Step 3: Notarize ---
-echo "[3/7] Creating DMG..."
+# --- Step 3: Notarize app bundle ---
+echo "[3/8] Notarizing app bundle with Apple (this may take several minutes)..."
+APP_ZIP="$OUTPUT_DIR/Muesli-app-${VERSION}.zip"
+ditto -c -k --keepParent "$APP_DIR" "$APP_ZIP"
+NOTARY_OUTPUT=$(xcrun notarytool submit "$APP_ZIP" \
+  --keychain-profile "$PROFILE_NAME" \
+  --wait 2>&1)
+echo "$NOTARY_OUTPUT"
+rm -f "$APP_ZIP"
+
+if echo "$NOTARY_OUTPUT" | grep -q "status: Accepted"; then
+  echo "  App notarization accepted."
+else
+  echo "  App notarization FAILED. Fetching log..."
+  SUBMISSION_ID=$(echo "$NOTARY_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
+  xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$PROFILE_NAME" 2>&1
+  exit 1
+fi
+
+# --- Step 4: Staple app bundle ---
+echo "[4/8] Stapling notarization ticket to app bundle..."
+xcrun stapler staple "$APP_DIR"
+echo "  App stapled."
+
+# --- Step 5: Create DMG from stapled app ---
+echo "[5/8] Creating DMG from stapled app..."
 "$ROOT/scripts/create_dmg.sh" "$APP_DIR" "$OUTPUT_DIR"
 DMG_PATH="$OUTPUT_DIR/Muesli-${VERSION}.dmg"
 
-# --- Step 4: Notarize DMG ---
-echo "[4/7] Notarizing DMG with Apple (this may take several minutes)..."
+# --- Step 6: Notarize DMG ---
+echo "[6/8] Notarizing DMG with Apple..."
 NOTARY_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" \
   --keychain-profile "$PROFILE_NAME" \
   --wait 2>&1)
 echo "$NOTARY_OUTPUT"
 
 if echo "$NOTARY_OUTPUT" | grep -q "status: Accepted"; then
-  echo "  Notarization accepted."
+  echo "  DMG notarization accepted."
 else
-  echo "  Notarization FAILED. Fetching log..."
+  echo "  DMG notarization FAILED. Fetching log..."
   SUBMISSION_ID=$(echo "$NOTARY_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
   xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$PROFILE_NAME" 2>&1
   exit 1
 fi
 
-# --- Step 5: Staple DMG ---
-echo "[5/7] Stapling notarization ticket to DMG..."
+# --- Step 7: Staple DMG ---
+echo "[7/8] Stapling notarization ticket to DMG..."
 xcrun stapler staple "$DMG_PATH"
-echo "  Stapled."
+echo "  DMG stapled."
 
 # Verify DMG and app bundle state
 spctl -a -vv -t open --context context:primary-signature "$DMG_PATH" 2>&1 | head -2
 spctl -a -vv "$APP_DIR" 2>&1 | head -2
 echo ""
 
-# --- Step 6: Generate appcast ---
-echo "[6/7] Generating appcast..."
+# --- Step 8: Generate appcast ---
+echo "[8/9] Generating appcast..."
 GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
 if [[ -x "$GENERATE_APPCAST" ]]; then
   "$GENERATE_APPCAST" "$OUTPUT_DIR" -o "$ROOT/docs/appcast.xml"
@@ -109,8 +133,8 @@ else
   echo "  Warning: generate_appcast not found — update docs/appcast.xml manually"
 fi
 
-# --- Step 7: GitHub Release ---
-echo "[7/7] Creating GitHub release v${VERSION}..."
+# --- Step 9: GitHub Release ---
+echo "[9/9] Creating GitHub release v${VERSION}..."
 TAG="v${VERSION}"
 
 git add docs/appcast.xml

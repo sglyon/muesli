@@ -79,9 +79,9 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleVersion</key>
-  <string>0.5.1</string>
+  <string>0.5.3</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.1</string>
+  <string>0.5.3</string>
   <key>CFBundleExecutable</key>
   <string>$APP_EXECUTABLE_NAME</string>
   <key>CFBundlePackageType</key>
