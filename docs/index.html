@@ -231,6 +231,7 @@
       color: rgba(255,255,255,0.9);
     }
 
+    .install-alt .command-row,
     .troubleshooting .command-row {
       display: inline-flex;
       align-items: center;
@@ -248,6 +249,7 @@
       color: rgba(255,255,255,1);
     }
 
+    .install-alt button,
     .troubleshooting button {
       padding: 6px 10px;
       font-size: 14px;
@@ -404,7 +406,10 @@
     <a class="get" href="https://github.com/pHequals7/muesli/releases/download/v0.5.5/Muesli-0.5.5.dmg">download for macOS</a>
     <div class="install-alt">
       <span>or install with homebrew</span>
-      <code>brew tap pHequals7/muesli && brew install --cask muesli</code>
+      <span class="command-row">
+        <code id="brew-cmd">brew tap pHequals7/muesli && brew install --cask muesli</code>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('brew-cmd').textContent);this.textContent='copied';setTimeout(()=>this.textContent='copy',1500)">copy</button>
+      </span>
     </div>
   </div>
 
