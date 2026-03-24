@@ -44,6 +44,12 @@ final class MuesliController: NSObject {
     private var dataDidChangeObserver: NSObjectProtocol?
     private var isStartingMeetingRecording = false
 
+    // MARK: - Transcript clipboard copy (Cmd+Shift+C during meeting)
+    private var transcriptKeyMonitorGlobal: Any?
+    private var transcriptKeyMonitorLocal: Any?
+    private var lastMicOffset: Int = 0
+    private var lastSystemOffset: Int = 0
+
     init(runtime: RuntimePaths) {
         let loadedConfig = configStore.load()
         self.runtime = runtime
@@ -189,6 +195,7 @@ final class MuesliController: NSObject {
             self.dataDidChangeObserver = nil
         }
         hotkeyMonitor.stop()
+        removeTranscriptHotkey()
         calendarMonitor.stop()
         micActivityMonitor.stop()
         meetingNotification.close()
@@ -586,6 +593,7 @@ final class MuesliController: NSObject {
                     meetingSession?.currentPower() ?? -160
                 }
                 self.indicator.setMeetingRecording(true, config: self.config)
+                self.installTranscriptHotkey()
                 self.statusBarController?.refresh()
             } catch {
                 fputs("[muesli-native] failed to start meeting: \(error)\n", stderr)
@@ -614,6 +622,7 @@ final class MuesliController: NSObject {
         guard let activeMeetingSession else { return }
         activeMeetingSession.discard()
         self.activeMeetingSession = nil
+        removeTranscriptHotkey()
         indicator.setMeetingRecording(false, config: config)
         micActivityMonitor.resumeAfterCooldown()
         setState(.idle)
@@ -624,6 +633,7 @@ final class MuesliController: NSObject {
 
     func stopMeetingRecording() {
         guard let activeMeetingSession else { return }
+        removeTranscriptHotkey()
         indicator.setMeetingRecording(false, config: config)
         setState(.transcribing)
         Task { [weak self] in
@@ -664,6 +674,70 @@ final class MuesliController: NSObject {
                 )
             }
         }
+    }
+
+    // MARK: - Transcript clipboard hotkey
+
+    private func installTranscriptHotkey() {
+        lastMicOffset = 0
+        lastSystemOffset = 0
+
+        transcriptKeyMonitorGlobal = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleTranscriptHotkey(event)
+        }
+        transcriptKeyMonitorLocal = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if self?.handleTranscriptHotkey(event) == true {
+                return nil // consume the event
+            }
+            return event
+        }
+    }
+
+    private func removeTranscriptHotkey() {
+        if let monitor = transcriptKeyMonitorGlobal {
+            NSEvent.removeMonitor(monitor)
+            transcriptKeyMonitorGlobal = nil
+        }
+        if let monitor = transcriptKeyMonitorLocal {
+            NSEvent.removeMonitor(monitor)
+            transcriptKeyMonitorLocal = nil
+        }
+    }
+
+    @discardableResult
+    private func handleTranscriptHotkey(_ event: NSEvent) -> Bool {
+        // Cmd+Shift+C
+        guard event.modifierFlags.contains([.command, .shift]),
+              event.charactersIgnoringModifiers?.lowercased() == "c",
+              isMeetingRecording() else {
+            return false
+        }
+        copyTranscriptDeltaToClipboard()
+        return true
+    }
+
+    private func copyTranscriptDeltaToClipboard() {
+        guard let session = activeMeetingSession else { return }
+
+        let (text, newMicOffset, newSystemOffset) = session.transcriptDelta(
+            micOffset: lastMicOffset,
+            systemOffset: lastSystemOffset
+        )
+
+        guard !text.isEmpty else {
+            indicator.showWarning("No new transcript", icon: "📋")
+            return
+        }
+
+        lastMicOffset = newMicOffset
+        lastSystemOffset = newSystemOffset
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        indicator.showWarning("Copied to clipboard", icon: "✅")
+        fputs("[meeting] transcript delta copied to clipboard (\(text.count) chars)\n", stderr)
     }
 
     func copyToClipboard(_ text: String) {

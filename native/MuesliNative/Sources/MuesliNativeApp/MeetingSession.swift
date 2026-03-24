@@ -80,12 +80,46 @@ final class MeetingSession {
     /// VAD controller for speech-boundary chunk rotation
     private var vadController: StreamingVadController?
     private let micChunkCollector = MeetingChunkCollector()
+    private let systemChunkCollector = MeetingChunkCollector()
     /// Track chunk start times for timestamp offsets
     private var currentChunkStartTime: Date?
+
+    // MARK: - Incremental transcript access (for mid-session clipboard copy)
+
+    /// Resolved mic segments accumulated as chunks complete transcription.
+    private let resolvedMicSegments = OSAllocatedUnfairLock(initialState: [SpeechSegment]())
+    /// Resolved system audio segments accumulated as chunks complete transcription.
+    private let resolvedSystemSegments = OSAllocatedUnfairLock(initialState: [SpeechSegment]())
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
         streamingMicRecorder.currentPower()
+    }
+
+    /// Returns the formatted transcript delta since the given offsets, plus new offsets.
+    /// Used for mid-session clipboard copy (e.g., "send to Claude" hotkey).
+    func transcriptDelta(
+        micOffset: Int,
+        systemOffset: Int
+    ) -> (text: String, newMicOffset: Int, newSystemOffset: Int) {
+        let meetingStart = self.startTime ?? Date()
+
+        let micSegs = resolvedMicSegments.withLock { Array($0.dropFirst(micOffset)) }
+        let sysSegs = resolvedSystemSegments.withLock { Array($0.dropFirst(systemOffset)) }
+
+        let newMicOffset = micOffset + micSegs.count
+        let newSystemOffset = systemOffset + sysSegs.count
+
+        guard !micSegs.isEmpty || !sysSegs.isEmpty else {
+            return (text: "", newMicOffset: newMicOffset, newSystemOffset: newSystemOffset)
+        }
+
+        let text = TranscriptFormatter.merge(
+            micSegments: micSegs,
+            systemSegments: sysSegs,
+            meetingStart: meetingStart
+        )
+        return (text: text, newMicOffset: newMicOffset, newSystemOffset: newSystemOffset)
     }
 
     private(set) var startTime: Date?
@@ -158,6 +192,7 @@ final class MeetingSession {
             try? FileManager.default.removeItem(at: url)
         }
         micChunkCollector.cancelAll()
+        systemChunkCollector.cancelAll()
         fputs("[meeting] recording discarded\n", stderr)
     }
 
@@ -218,6 +253,9 @@ final class MeetingSession {
             return lhs.start < rhs.start
         }
 
+        // Drain system chunks (discard — batch transcription above is authoritative)
+        _ = await systemChunkCollector.closeAndDrainSortedSegments()
+
         fputs("[meeting] \(micSegments.count) mic chunks transcribed during meeting\n", stderr)
 
         let rawTranscript = TranscriptFormatter.merge(
@@ -257,44 +295,72 @@ final class MeetingSession {
     }
 
     /// Called by VAD on speech boundaries or max-duration fallback.
-    /// Rotates the streaming mic file and sends the completed chunk for transcription.
+    /// Rotates both mic and system audio files and sends completed chunks for transcription.
     private func rotateChunk() {
         guard isRecording else { return }
         let meetingStart = self.startTime ?? Date()
         let chunkStart = currentChunkStartTime ?? meetingStart
 
-        // Rotate file — no gap, AVAudioEngine tap keeps running
-        let chunkURL = streamingMicRecorder.rotateFile()
+        // Rotate both files — no gap, taps keep running
+        let micChunkURL = streamingMicRecorder.rotateFile()
+        let systemChunkURL = systemAudioRecorder.rotateFile()
         currentChunkStartTime = Date()
 
-        // Transcribe the completed chunk async
-        guard let chunkURL else { return }
         let chunkOffset = chunkStart.timeIntervalSince(meetingStart)
         let backend = self.backend
 
         fputs("[meeting] rotating chunk at offset=\(String(format: "%.0f", chunkOffset))s\n", stderr)
 
-        let task = Task { [weak self] () -> SpeechSegment? in
-            defer {
-                try? FileManager.default.removeItem(at: chunkURL)
-            }
-            guard let self else { return nil }
-            do {
-                if Task.isCancelled {
-                    return nil
+        // Transcribe mic chunk
+        if let micChunkURL {
+            let micTask = Task { [weak self] () -> SpeechSegment? in
+                defer {
+                    try? FileManager.default.removeItem(at: micChunkURL)
                 }
-                let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: chunkURL, backend: backend, customWords: self.serializedCustomWords)
-                if !result.text.isEmpty {
-                    fputs("[meeting] chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
-                    return SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
+                guard let self else { return nil }
+                do {
+                    if Task.isCancelled { return nil }
+                    let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: micChunkURL, backend: backend, customWords: self.serializedCustomWords)
+                    if !result.text.isEmpty {
+                        fputs("[meeting] mic chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                        let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
+                        self.resolvedMicSegments.withLock { $0.append(segment) }
+                        return segment
+                    }
+                } catch {
+                    fputs("[meeting] mic chunk transcription failed: \(error)\n", stderr)
                 }
-            } catch {
-                fputs("[meeting] chunk transcription failed: \(error)\n", stderr)
+                return nil
             }
-            return nil
+            if !micChunkCollector.add(micTask) {
+                micTask.cancel()
+            }
         }
-        if !micChunkCollector.add(task) {
-            task.cancel()
+
+        // Transcribe system audio chunk
+        if let systemChunkURL {
+            let systemTask = Task { [weak self] () -> SpeechSegment? in
+                defer {
+                    try? FileManager.default.removeItem(at: systemChunkURL)
+                }
+                guard let self else { return nil }
+                do {
+                    if Task.isCancelled { return nil }
+                    let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: systemChunkURL, backend: backend, customWords: self.serializedCustomWords)
+                    if !result.text.isEmpty {
+                        fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                        let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
+                        self.resolvedSystemSegments.withLock { $0.append(segment) }
+                        return segment
+                    }
+                } catch {
+                    fputs("[meeting] system chunk transcription failed: \(error)\n", stderr)
+                }
+                return nil
+            }
+            if !systemChunkCollector.add(systemTask) {
+                systemTask.cancel()
+            }
         }
     }
 }

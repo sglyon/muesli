@@ -1,14 +1,20 @@
 import AVFoundation
 import Foundation
-import ScreenCaptureKit
 import MuesliCore
+import ScreenCaptureKit
+import os
 
 final class SystemAudioRecorder: NSObject, SCStreamOutput {
     private var stream: SCStream?
-    private var outputFile: FileHandle?
-    private var outputURL: URL?
-    private var totalBytesWritten = 0
     private(set) var isRecording = false
+
+    private let lock = OSAllocatedUnfairLock(initialState: FileState())
+
+    private struct FileState {
+        var fileHandle: FileHandle?
+        var fileURL: URL?
+        var bytesWritten: Int = 0
+    }
 
     private static let sampleRate: Double = 16_000
     private static let channels: Int = 1
@@ -20,21 +26,8 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
     func start() async throws {
         guard !isRecording else { return }
 
-        // Create output WAV file
-        let outputDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("muesli-system-audio", isDirectory: true)
-        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let url = outputDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        guard let file = FileHandle(forWritingAtPath: url.path) else {
-            throw NSError(domain: "SystemAudio", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Could not open output file",
-            ])
-        }
-        file.write(Self.createWAVHeader(dataSize: 0))
-        outputFile = file
-        outputURL = url
-        totalBytesWritten = 0
+        let fileState = try createNewFile()
+        lock.withLock { $0 = fileState }
         isRecording = true
 
         do {
@@ -65,8 +58,29 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         }
     }
 
+    /// Rotate to a new file mid-recording. Returns the completed WAV URL. No audio gap.
+    func rotateFile() -> URL? {
+        guard isRecording else { return nil }
+
+        let newState: FileState
+        do {
+            newState = try createNewFile()
+        } catch {
+            fputs("[system-audio] failed to create new file during rotation: \(error)\n", stderr)
+            return nil
+        }
+
+        let completed = lock.withLock { state -> FileState in
+            let old = state
+            state = newState
+            return old
+        }
+
+        return finalizeFile(completed)
+    }
+
     func stop() -> URL? {
-        guard isRecording || outputFile != nil || outputURL != nil else { return nil }
+        guard isRecording else { return nil }
         isRecording = false
 
         if let stream {
@@ -79,21 +93,15 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         }
         stream = nil
 
-        // Finalize WAV
-        if let outputFile {
-            let header = Self.createWAVHeader(dataSize: totalBytesWritten)
-            outputFile.seek(toFileOffset: 0)
-            outputFile.write(header)
-            outputFile.closeFile()
+        let finalState = lock.withLock { state -> FileState in
+            let old = state
+            state = FileState()
+            return old
         }
-        outputFile = nil
-        let writtenBytes = totalBytesWritten
-        let completedURL = outputURL
-        outputURL = nil
-        totalBytesWritten = 0
 
-        fputs("[system-audio] capture stopped, \(writtenBytes) bytes written\n", stderr)
-        return completedURL
+        let url = finalizeFile(finalState)
+        fputs("[system-audio] capture stopped, \(finalState.bytesWritten) bytes written\n", stderr)
+        return url
     }
 
     // MARK: - SCStream setup
@@ -184,13 +192,17 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
                 }
             }
 
-            outputFile?.write(int16Data)
-            totalBytesWritten += int16Data.count
+            lock.withLock { state in
+                state.fileHandle?.write(int16Data)
+                state.bytesWritten += int16Data.count
+            }
         } else {
             // Already PCM int16, write directly
             let rawData = Data(bytes: dataPointer, count: length)
-            outputFile?.write(rawData)
-            totalBytesWritten += length
+            lock.withLock { state in
+                state.fileHandle?.write(rawData)
+                state.bytesWritten += rawData.count
+            }
         }
     }
 
@@ -217,19 +229,49 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput {
         return header
     }
 
+    // MARK: - File Management
+
+    private func createNewFile() throws -> FileState {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-system-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension("wav")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        guard let handle = FileHandle(forWritingAtPath: url.path) else {
+            throw NSError(domain: "SystemAudioRecorder", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "Could not open file for writing",
+            ])
+        }
+        handle.write(Self.createWAVHeader(dataSize: 0))
+        return FileState(fileHandle: handle, fileURL: url, bytesWritten: 0)
+    }
+
+    private func finalizeFile(_ state: FileState) -> URL? {
+        guard let handle = state.fileHandle, let url = state.fileURL else { return nil }
+
+        handle.seek(toFileOffset: 0)
+        handle.write(Self.createWAVHeader(dataSize: state.bytesWritten))
+        handle.closeFile()
+
+        if state.bytesWritten == 0 {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return url
+    }
+
     private func cleanupFailedStart() {
         isRecording = false
         stream = nil
 
-        if let outputFile {
-            outputFile.closeFile()
+        let state = lock.withLock { state -> FileState in
+            let old = state
+            state = FileState()
+            return old
         }
-        outputFile = nil
-
-        if let outputURL {
-            try? FileManager.default.removeItem(at: outputURL)
+        state.fileHandle?.closeFile()
+        if let url = state.fileURL {
+            try? FileManager.default.removeItem(at: url)
         }
-        outputURL = nil
-        totalBytesWritten = 0
     }
 }
