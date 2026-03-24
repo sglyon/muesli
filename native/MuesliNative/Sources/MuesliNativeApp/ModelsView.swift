@@ -257,6 +257,8 @@ struct ModelsView: View {
             let path = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/muesli/models/nemotron-560ms")
             try? fm.removeItem(at: path)
+        case "canary":
+            try? fm.removeItem(at: CanaryQwenModelStore.cacheDirectory())
         case "fluidaudio":
             // FluidAudio models are in ~/Library/Application Support/FluidAudio/Models/
             let supportDir = fm.homeDirectoryForCurrentUser
@@ -307,6 +309,8 @@ struct ModelsView: View {
                 }
             }
             return false
+        case "canary":
+            return CanaryQwenModelStore.isAvailableLocally()
         default:
             return false
         }

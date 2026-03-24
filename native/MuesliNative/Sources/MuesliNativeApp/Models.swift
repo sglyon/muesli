@@ -63,6 +63,15 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let canaryQwen = BackendOption(
+        backend: "canary",
+        model: "phequals/canary-qwen-2.5b-coreml-int8",
+        label: "Canary Qwen",
+        sizeLabel: "~2.5 GB",
+        description: "INT8 CoreML, autoregressive, experimental. English-first. First use warms up slowly. Final transcript after stop in v1.",
+        recommended: false
+    )
+
     // Default alias
     static let whisper = parakeetMultilingual
 
@@ -70,7 +79,7 @@ struct BackendOption: Equatable {
     static let all: [BackendOption] = [
         .parakeetMultilingual, .parakeetEnglish,
         .whisperSmall, .whisperMedium, .whisperLargeTurbo,
-        .qwen3Asr, .nemotronStreaming,
+        .qwen3Asr, .canaryQwen, .nemotronStreaming,
     ]
 
     static let qwen3Asr = BackendOption(
@@ -118,6 +127,8 @@ struct BackendOption: Equatable {
             let path = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/muesli/models/nemotron-560ms/encoder/encoder_int8.mlmodelc")
             return fm.fileExists(atPath: path.path)
+        case "canary":
+            return CanaryQwenModelStore.isAvailableLocally()
         default:
             return false
         }
