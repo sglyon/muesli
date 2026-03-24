@@ -2,6 +2,11 @@ import SwiftUI
 import MuesliCore
 
 struct SidebarView: View {
+    private let sidebarIconColumnWidth: CGFloat = 20
+    private let meetingsTrailingColumnWidth: CGFloat = 24
+    private let sidebarRowHorizontalPadding: CGFloat = 16
+    private let sidebarRowOuterPadding: CGFloat = 8
+
     let appState: AppState
     let controller: MuesliController
     @State private var meetingsExpanded = true
@@ -90,7 +95,7 @@ struct SidebarView: View {
     private var meetingsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
             let isSelected = appState.selectedTab == .meetings
-            HStack(spacing: MuesliTheme.spacing8) {
+            HStack(spacing: MuesliTheme.spacing12) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
                         meetingsExpanded = true
@@ -101,14 +106,13 @@ struct SidebarView: View {
                         Image(systemName: "person.2.fill")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
-                            .frame(width: 20)
+                            .frame(width: sidebarIconColumnWidth)
                         Text("Meetings")
                             .font(MuesliTheme.headline())
                             .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
-                        Spacer()
+                        Spacer(minLength: 0)
                     }
-                    .padding(.leading, MuesliTheme.spacing16)
-                    .padding(.vertical, MuesliTheme.spacing8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
 
@@ -120,7 +124,7 @@ struct SidebarView: View {
                     Image(systemName: meetingsExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(isSelected ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
-                        .frame(width: 18, height: 18)
+                        .frame(width: meetingsTrailingColumnWidth, height: 18)
                 }
                 .buttonStyle(.plain)
 
@@ -128,18 +132,18 @@ struct SidebarView: View {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(isSelected ? MuesliTheme.textSecondary : MuesliTheme.textTertiary)
-                        .frame(width: 18, height: 18)
+                        .frame(width: meetingsTrailingColumnWidth, height: 18)
                 }
                 .buttonStyle(.plain)
                 .help("New Meeting Folder")
             }
-            .padding(.horizontal, MuesliTheme.spacing8)
-            .padding(.trailing, MuesliTheme.spacing12)
+            .padding(.horizontal, sidebarRowHorizontalPadding)
+            .padding(.vertical, MuesliTheme.spacing8)
             .background(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
                     .fill(isSelected ? MuesliTheme.surfaceSelected : Color.clear)
             )
-            .padding(.horizontal, MuesliTheme.spacing8)
+            .padding(.horizontal, sidebarRowOuterPadding)
 
             if meetingsExpanded {
                 VStack(alignment: .leading, spacing: 2) {
@@ -178,7 +182,7 @@ struct SidebarView: View {
                         }
                     }
                 }
-                .padding(.horizontal, MuesliTheme.spacing8)
+                .padding(.horizontal, sidebarRowOuterPadding)
             }
         }
     }
@@ -195,13 +199,13 @@ struct SidebarView: View {
                 Image(systemName: icon)
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textSecondary)
-                    .frame(width: 20)
+                    .frame(width: sidebarIconColumnWidth)
                 Text(label)
                     .font(MuesliTheme.headline())
                     .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
                 Spacer()
             }
-            .padding(.horizontal, MuesliTheme.spacing16)
+            .padding(.horizontal, sidebarRowHorizontalPadding)
             .padding(.vertical, MuesliTheme.spacing8)
             .background(
                 RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
@@ -209,7 +213,7 @@ struct SidebarView: View {
             )
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, MuesliTheme.spacing8)
+        .padding(.horizontal, sidebarRowOuterPadding)
     }
 
     @ViewBuilder
@@ -224,7 +228,7 @@ struct SidebarView: View {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(isSelected ? MuesliTheme.accent : MuesliTheme.textTertiary)
-                .frame(width: 16)
+                .frame(width: sidebarIconColumnWidth)
             Text(label)
                 .font(MuesliTheme.callout())
                 .foregroundStyle(isSelected ? MuesliTheme.textPrimary : MuesliTheme.textSecondary)
@@ -232,10 +236,11 @@ struct SidebarView: View {
             Spacer()
             Text("\(count)")
                 .font(MuesliTheme.caption())
+                .monospacedDigit()
                 .foregroundStyle(MuesliTheme.textTertiary)
+                .frame(width: meetingsTrailingColumnWidth, alignment: .center)
         }
-        .padding(.leading, 28)
-        .padding(.trailing, MuesliTheme.spacing12)
+        .padding(.horizontal, sidebarRowHorizontalPadding)
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
@@ -251,7 +256,7 @@ struct SidebarView: View {
             Image(systemName: "folder")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(MuesliTheme.accent)
-                .frame(width: 16)
+                .frame(width: sidebarIconColumnWidth)
             TextField("Folder name", text: $renamingFolderName)
                 .font(MuesliTheme.callout())
                 .textFieldStyle(.plain)
@@ -263,8 +268,7 @@ struct SidebarView: View {
                     renamingFolderID = nil
                 }
         }
-        .padding(.leading, 28)
-        .padding(.trailing, MuesliTheme.spacing12)
+        .padding(.horizontal, sidebarRowHorizontalPadding)
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)

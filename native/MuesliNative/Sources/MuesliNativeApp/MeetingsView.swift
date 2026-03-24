@@ -224,59 +224,85 @@ struct MeetingsView: View {
 
     @ViewBuilder
     private var browserHeader: some View {
-        HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
-            VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
-                Text(currentFolderName)
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundStyle(MuesliTheme.textPrimary)
-
-                HStack(spacing: MuesliTheme.spacing8) {
-                    Text("\(filteredMeetings.count) meeting\(filteredMeetings.count == 1 ? "" : "s")")
-                        .font(MuesliTheme.callout())
-                        .foregroundStyle(MuesliTheme.textSecondary)
-
-                    Text("\u{2022}")
-                        .font(MuesliTheme.callout())
-                        .foregroundStyle(MuesliTheme.textTertiary)
-
-                    Text("Open a meeting to review notes, transcript, and template-driven summaries")
-                        .font(MuesliTheme.callout())
-                        .foregroundStyle(MuesliTheme.textTertiary)
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: MuesliTheme.spacing16) {
+                    browserHeaderTitle
+                    Spacer(minLength: MuesliTheme.spacing16)
+                    browserHeaderActions
                 }
-            }
 
-            Spacer()
-
-            HStack(spacing: MuesliTheme.spacing8) {
-                sortButton
-                dateFilterButton
-
-                Button {
-                    controller.showMeetingTemplatesManager()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 11, weight: .medium))
-                        Text("Manage Templates")
-                            .font(.system(size: 12, weight: .semibold))
-                            .lineLimit(1)
+                VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
+                    browserHeaderTitle
+                    HStack {
+                        Spacer(minLength: 0)
+                        browserHeaderActions
                     }
-                    .foregroundStyle(MuesliTheme.textPrimary)
-                    .padding(.horizontal, MuesliTheme.spacing12)
-                    .padding(.vertical, 8)
-                    .background(MuesliTheme.surfacePrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
-                    )
                 }
-                .buttonStyle(.plain)
-                .fixedSize()
-                .layoutPriority(1)
             }
-            .fixedSize(horizontal: true, vertical: false)
+
+            browserHeaderMeta
         }
+    }
+
+    @ViewBuilder
+    private var browserHeaderTitle: some View {
+        Text(currentFolderName)
+            .font(.system(size: 30, weight: .bold))
+            .foregroundStyle(MuesliTheme.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var browserHeaderMeta: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            Text("\(filteredMeetings.count) meeting\(filteredMeetings.count == 1 ? "" : "s")")
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textSecondary)
+                .fixedSize()
+
+            Text("\u{2022}")
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textTertiary)
+                .fixedSize()
+
+            Text("Open a meeting to review notes, transcript, and template-driven summaries")
+                .font(MuesliTheme.callout())
+                .foregroundStyle(MuesliTheme.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var browserHeaderActions: some View {
+        HStack(spacing: MuesliTheme.spacing8) {
+            sortButton
+            dateFilterButton
+
+            Button {
+                controller.showMeetingTemplatesManager()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Manage Templates")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(MuesliTheme.textPrimary)
+                .padding(.horizontal, MuesliTheme.spacing12)
+                .padding(.vertical, 8)
+                .background(MuesliTheme.surfacePrimary)
+                .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
+                .overlay(
+                    RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
+                        .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     @ViewBuilder
