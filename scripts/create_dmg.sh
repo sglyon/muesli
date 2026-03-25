@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PATH="${1:-/Applications/Muesli.app}"
 OUTPUT_DIR="${2:-$ROOT/dist-release}"
-SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Lyon Cubs, LLC (PBHS7U4BMU)}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "App not found: $APP_PATH" >&2

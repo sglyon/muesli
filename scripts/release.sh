@@ -31,7 +31,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 PROFILE_NAME="${MUESLI_NOTARY_PROFILE:-MuesliNotary}"
-SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Pranav Hari Guruvayurappan (58W55QJ567)}"
+SIGN_IDENTITY="${MUESLI_SIGN_IDENTITY:-Developer ID Application: Lyon Cubs, LLC (PBHS7U4BMU)}"
 APP_DIR="/Applications/Muesli.app"
 OUTPUT_DIR="$ROOT/dist-release"
 GENERATE_APPCAST="$ROOT/native/MuesliNative/.build/artifacts/sparkle/Sparkle/bin/generate_appcast"
