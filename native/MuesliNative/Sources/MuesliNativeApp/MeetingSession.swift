@@ -96,6 +96,18 @@ final class MeetingSession {
         streamingMicRecorder.currentPower()
     }
 
+    /// Number of resolved segments (cheap check to detect changes without copying arrays).
+    func segmentCounts() -> (mic: Int, system: Int) {
+        (resolvedMicSegments.withLock { $0.count },
+         resolvedSystemSegments.withLock { $0.count })
+    }
+
+    /// Snapshot of all resolved segments so far (for live transcript display).
+    func allSegments() -> (mic: [SpeechSegment], system: [SpeechSegment]) {
+        (resolvedMicSegments.withLock { Array($0) },
+         resolvedSystemSegments.withLock { Array($0) })
+    }
+
     /// Returns the formatted transcript delta since the given offsets, plus new offsets.
     /// Used for mid-session clipboard copy (e.g., "send to Claude" hotkey).
     func transcriptDelta(
@@ -312,8 +324,9 @@ final class MeetingSession {
         fputs("[meeting] rotating chunk at offset=\(String(format: "%.0f", chunkOffset))s\n", stderr)
 
         // Transcribe mic chunk
+        var micTask: Task<SpeechSegment?, Never>?
         if let micChunkURL {
-            let micTask = Task { [weak self] () -> SpeechSegment? in
+            let task = Task { [weak self] () -> SpeechSegment? in
                 defer {
                     try? FileManager.default.removeItem(at: micChunkURL)
                 }
@@ -332,14 +345,22 @@ final class MeetingSession {
                 }
                 return nil
             }
-            if !micChunkCollector.add(micTask) {
-                micTask.cancel()
+            micTask = task
+            if !micChunkCollector.add(task) {
+                task.cancel()
             }
         }
 
-        // Transcribe system audio chunk
+        // Transcribe system audio chunk — serialized after mic to avoid concurrent
+        // CoreML predictions whose MLMultiArray buffers race with autorelease pool
+        // cleanup on the cooperative thread pool (causes EXC_BAD_ACCESS).
         if let systemChunkURL {
+            let precedingMicTask = micTask
             let systemTask = Task { [weak self] () -> SpeechSegment? in
+                // Wait for mic transcription to finish first
+                if let precedingMicTask {
+                    _ = await precedingMicTask.value
+                }
                 defer {
                     try? FileManager.default.removeItem(at: systemChunkURL)
                 }
