@@ -163,6 +163,13 @@ actor TranscriptionCoordinator {
         return result
     }
 
+    /// Reset the speaker database between meetings so speakers from a previous
+    /// meeting don't contaminate assignments in the new one.
+    func resetSpeakerDatabase() {
+        diarizerManager?.speakerManager.reset(keepIfPermanent: false)
+        fputs("[muesli-native] speaker database reset for new meeting\n", stderr)
+    }
+
     func getVadManager() -> VadManager? {
         vadManager
     }

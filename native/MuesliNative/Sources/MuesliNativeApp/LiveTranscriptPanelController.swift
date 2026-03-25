@@ -109,12 +109,14 @@ final class LiveTranscriptPanelController {
         lastMicCount = counts.mic
         lastSystemCount = counts.system
 
-        let (micSegs, sysSegs) = session.allSegments()
+        let (micSegs, sysSegs, diarSegs, labelMap) = session.allSegments()
         let meetingStart = session.startTime ?? Date()
 
         let merged = TranscriptFormatter.merge(
             micSegments: micSegs,
             systemSegments: sysSegs,
+            diarizationSegments: diarSegs.isEmpty ? nil : diarSegs,
+            speakerLabelMap: labelMap.isEmpty ? nil : labelMap,
             meetingStart: meetingStart
         )
 

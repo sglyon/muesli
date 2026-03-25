@@ -90,6 +90,11 @@ final class MeetingSession {
     private let resolvedMicSegments = OSAllocatedUnfairLock(initialState: [SpeechSegment]())
     /// Resolved system audio segments accumulated as chunks complete transcription.
     private let resolvedSystemSegments = OSAllocatedUnfairLock(initialState: [SpeechSegment]())
+    /// Diarization segments accumulated from chunk-level speaker identification.
+    private let resolvedDiarizationSegments = OSAllocatedUnfairLock(initialState: [TimedSpeakerSegment]())
+    /// Stable speaker label map: speakerId → "Speaker N" (persists across polls).
+    private let speakerLabelMap = OSAllocatedUnfairLock(initialState: [String: String]())
+    private let nextSpeakerNumber = OSAllocatedUnfairLock(initialState: 1)
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
@@ -103,9 +108,11 @@ final class MeetingSession {
     }
 
     /// Snapshot of all resolved segments so far (for live transcript display).
-    func allSegments() -> (mic: [SpeechSegment], system: [SpeechSegment]) {
+    func allSegments() -> (mic: [SpeechSegment], system: [SpeechSegment], diarization: [TimedSpeakerSegment], labelMap: [String: String]) {
         (resolvedMicSegments.withLock { Array($0) },
-         resolvedSystemSegments.withLock { Array($0) })
+         resolvedSystemSegments.withLock { Array($0) },
+         resolvedDiarizationSegments.withLock { Array($0) },
+         speakerLabelMap.withLock { $0 })
     }
 
     /// Returns the formatted transcript delta since the given offsets, plus new offsets.
@@ -164,6 +171,9 @@ final class MeetingSession {
     }
 
     func start() async throws {
+        // Reset speaker database so previous meetings don't contaminate speaker assignments
+        await transcriptionCoordinator.resetSpeakerDatabase()
+
         try streamingMicRecorder.prepare()
         try streamingMicRecorder.start()
         try await systemAudioRecorder.start()
@@ -248,8 +258,15 @@ final class MeetingSession {
             systemResult = try await transcriptionCoordinator.transcribeMeeting(at: systemAudioURL, backend: backend, customWords: serializedCustomWords)
 
             // Run speaker diarization on system audio (batch post-processing)
-            if let diarizationResult = try? await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
-                diarizationSegments = diarizationResult.segments
+            do {
+                if let diarizationResult = try await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
+                    diarizationSegments = diarizationResult.segments
+                    fputs("[meeting] diarization returned \(diarizationResult.segments.count) segments\n", stderr)
+                } else {
+                    fputs("[meeting] diarization not available (model not loaded)\n", stderr)
+                }
+            } catch {
+                fputs("[meeting] diarization failed: \(error)\n", stderr)
             }
 
             try? FileManager.default.removeItem(at: systemAudioURL)
@@ -372,6 +389,43 @@ final class MeetingSession {
                         fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
                         let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
                         self.resolvedSystemSegments.withLock { $0.append(segment) }
+
+                        // Run diarization on this chunk for live speaker labels.
+                        // The shared DiarizerManager's SpeakerManager persists across chunks,
+                        // so speaker IDs will be consistent as it matches embeddings.
+                        do {
+                            if let diarResult = try await self.transcriptionCoordinator.diarizeSystemAudio(at: systemChunkURL) {
+                                let offsetSegments = diarResult.segments.map { seg in
+                                    TimedSpeakerSegment(
+                                        speakerId: seg.speakerId,
+                                        embedding: seg.embedding,
+                                        startTimeSeconds: seg.startTimeSeconds + Float(chunkOffset),
+                                        endTimeSeconds: seg.endTimeSeconds + Float(chunkOffset),
+                                        qualityScore: seg.qualityScore
+                                    )
+                                }
+                                self.resolvedDiarizationSegments.withLock { $0.append(contentsOf: offsetSegments) }
+
+                                // Register new speaker IDs in the stable label map
+                                for seg in diarResult.segments {
+                                    self.speakerLabelMap.withLock { map in
+                                        if map[seg.speakerId] == nil {
+                                            let num = self.nextSpeakerNumber.withLock { n in
+                                                let current = n
+                                                n += 1
+                                                return current
+                                            }
+                                            map[seg.speakerId] = "Speaker \(num)"
+                                        }
+                                    }
+                                }
+
+                                fputs("[meeting] chunk diarization: \(diarResult.segments.count) segments\n", stderr)
+                            }
+                        } catch {
+                            fputs("[meeting] chunk diarization failed: \(error)\n", stderr)
+                        }
+
                         return segment
                     }
                 } catch {
