@@ -44,7 +44,9 @@ final class MuesliController: NSObject {
     private var dataDidChangeObserver: NSObjectProtocol?
     private var isStartingMeetingRecording = false
 
-    // MARK: - Transcript clipboard copy (Cmd+Shift+C during meeting)
+    // MARK: - Live transcript panel + clipboard copy (Cmd+Shift+C/T during meeting)
+    private var liveTranscriptController: LiveTranscriptPanelController?
+    private var activeMeetingTitle: String = "Meeting"
     private var transcriptKeyMonitorGlobal: Any?
     private var transcriptKeyMonitorLocal: Any?
     private var lastMicOffset: Int = 0
@@ -571,6 +573,7 @@ final class MuesliController: NSObject {
     func startMeetingRecording(title: String = "Meeting") {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
         isStartingMeetingRecording = true
+        activeMeetingTitle = title
         let meetingSession = MeetingSession(
             title: title,
             calendarEventID: nil,
@@ -623,6 +626,7 @@ final class MuesliController: NSObject {
         activeMeetingSession.discard()
         self.activeMeetingSession = nil
         removeTranscriptHotkey()
+        liveTranscriptController?.hide()
         indicator.setMeetingRecording(false, config: config)
         micActivityMonitor.resumeAfterCooldown()
         setState(.idle)
@@ -634,6 +638,7 @@ final class MuesliController: NSObject {
     func stopMeetingRecording() {
         guard let activeMeetingSession else { return }
         removeTranscriptHotkey()
+        liveTranscriptController?.hide()
         indicator.setMeetingRecording(false, config: config)
         setState(.transcribing)
         Task { [weak self] in
@@ -706,14 +711,33 @@ final class MuesliController: NSObject {
 
     @discardableResult
     private func handleTranscriptHotkey(_ event: NSEvent) -> Bool {
-        // Cmd+Shift+C
         guard event.modifierFlags.contains([.command, .shift]),
-              event.charactersIgnoringModifiers?.lowercased() == "c",
               isMeetingRecording() else {
             return false
         }
-        copyTranscriptDeltaToClipboard()
-        return true
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "c":
+            copyTranscriptDeltaToClipboard()
+            return true
+        case "t":
+            toggleLiveTranscript()
+            return true
+        default:
+            return false
+        }
+    }
+
+    @objc func toggleLiveTranscript() {
+        guard let session = activeMeetingSession else { return }
+        if liveTranscriptController == nil {
+            liveTranscriptController = LiveTranscriptPanelController()
+        }
+        liveTranscriptController?.toggle(session: session, title: activeMeetingTitle)
+        statusBarController?.refresh()
+    }
+
+    var isLiveTranscriptVisible: Bool {
+        liveTranscriptController?.isVisible ?? false
     }
 
     private func copyTranscriptDeltaToClipboard() {
