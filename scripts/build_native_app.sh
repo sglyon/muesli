@@ -23,8 +23,28 @@ SKIP_SIGN="${MUESLI_SKIP_SIGN:-0}"
 mkdir -p "$DIST_DIR"
 
 set +e
+# Patch FluidAudio for Swift 6.3 compatibility — FluidAudio declares
+# swift-tools-version:6.0 but has not been updated for Swift 6.3's stricter
+# 'sending' diagnostics in StreamingAsrManager.swift (which Muesli doesn't
+# use).  Adding swiftLanguageModes at the package level keeps the 6.0 manifest
+# but compiles in Swift 5 language mode until upstream is fixed.
+FLUIDAUDIO_PKG="$PACKAGE_DIR/.build/checkouts/FluidAudio/Package.swift"
+if [[ -f "$FLUIDAUDIO_PKG" ]] && ! grep -q 'swiftLanguageModes' "$FLUIDAUDIO_PKG"; then
+  sed -i '' 's|cxxLanguageStandard: .cxx17|swiftLanguageModes: [.v5], cxxLanguageStandard: .cxx17|' "$FLUIDAUDIO_PKG"
+  # Clean after patching to avoid stale _NumericsShims module cache
+  swift package --package-path "$PACKAGE_DIR" clean 2>/dev/null
+  echo "Patched FluidAudio Package.swift for Swift 6.3 compatibility (clean build)"
+fi
 swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG" --product "$APP_BINARY"
 status=$?
+
+# Retry once after cleaning if build fails (stale _NumericsShims module cache)
+if [[ $status -ne 0 ]]; then
+  echo "Build failed — cleaning and retrying..." >&2
+  swift package --package-path "$PACKAGE_DIR" clean 2>/dev/null
+  swift build --package-path "$PACKAGE_DIR" -c "$BUILD_CONFIG" --product "$APP_BINARY"
+  status=$?
+fi
 set -e
 
 if [[ $status -ne 0 ]]; then
