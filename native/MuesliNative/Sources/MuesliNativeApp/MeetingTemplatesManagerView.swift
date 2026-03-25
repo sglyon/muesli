@@ -11,6 +11,8 @@ struct MeetingTemplatesManagerView: View {
     @State private var draftTemplateName = ""
     @State private var draftTemplatePrompt = ""
     @State private var draftTemplateIcon = MeetingTemplates.customIconFallback
+    @State private var showNameValidationError = false
+    @State private var showPromptValidationError = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
@@ -40,14 +42,17 @@ struct MeetingTemplatesManagerView: View {
                     actionButton("Done", systemImage: "checkmark") {
                         onClose()
                     }
+                    .disabled(isEditingTemplateInProgress)
+                    .opacity(isEditingTemplateInProgress ? 0.55 : 1)
+                    .help(isEditingTemplateInProgress ? "Finish or cancel template editing before closing." : "Close template manager")
                 }
             }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: MuesliTheme.spacing12) {
-            if controller.customMeetingTemplates().isEmpty {
-                emptyState
-            } else {
+                    if controller.customMeetingTemplates().isEmpty {
+                        emptyState
+                    } else {
                         VStack(spacing: MuesliTheme.spacing8) {
                             ForEach(controller.customMeetingTemplates()) { template in
                                 customTemplateRow(template)
@@ -69,7 +74,7 @@ struct MeetingTemplatesManagerView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-            HStack(spacing: MuesliTheme.spacing8) {
+        HStack(spacing: MuesliTheme.spacing8) {
             Image(systemName: MeetingTemplates.customIconFallback)
                 .font(.system(size: 11))
                 .foregroundStyle(MuesliTheme.textTertiary)
@@ -141,6 +146,23 @@ struct MeetingTemplatesManagerView: View {
                     .foregroundStyle(MuesliTheme.textSecondary)
                 TextField("Customer follow-up", text: $draftTemplateName)
                     .textFieldStyle(.roundedBorder)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(
+                                showNameValidationError ? MuesliTheme.recording.opacity(0.75) : .clear,
+                                lineWidth: 1
+                            )
+                    }
+                    .onChange(of: draftTemplateName) { _, newValue in
+                        if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            showNameValidationError = false
+                        }
+                    }
+                if showNameValidationError {
+                    Text("Enter a template name.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -164,8 +186,21 @@ struct MeetingTemplatesManagerView: View {
                     .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
                     .overlay(
                         RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall)
-                            .strokeBorder(MuesliTheme.surfaceBorder, lineWidth: 1)
+                            .strokeBorder(
+                                showPromptValidationError ? MuesliTheme.recording.opacity(0.75) : MuesliTheme.surfaceBorder,
+                                lineWidth: 1
+                            )
                     )
+                    .onChange(of: draftTemplatePrompt) { _, newValue in
+                        if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            showPromptValidationError = false
+                        }
+                    }
+                if showPromptValidationError {
+                    Text("Enter the prompt instructions for this template.")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.recording)
+                }
             }
 
             HStack {
@@ -193,6 +228,7 @@ struct MeetingTemplatesManagerView: View {
         draftTemplateName = ""
         draftTemplatePrompt = ""
         draftTemplateIcon = MeetingTemplates.customIconFallback
+        clearValidationErrors()
     }
 
     private func beginEditingTemplate(_ template: CustomMeetingTemplate) {
@@ -201,6 +237,7 @@ struct MeetingTemplatesManagerView: View {
         draftTemplateName = template.name
         draftTemplatePrompt = template.prompt
         draftTemplateIcon = MeetingTemplates.normalizedCustomIcon(named: template.icon)
+        clearValidationErrors()
     }
 
     private func resetTemplateEditor() {
@@ -209,11 +246,14 @@ struct MeetingTemplatesManagerView: View {
         draftTemplateName = ""
         draftTemplatePrompt = ""
         draftTemplateIcon = MeetingTemplates.customIconFallback
+        clearValidationErrors()
     }
 
     private func saveTemplateEditor() {
         let trimmedName = draftTemplateName.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPrompt = draftTemplatePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        showNameValidationError = trimmedName.isEmpty
+        showPromptValidationError = trimmedPrompt.isEmpty
         guard !trimmedName.isEmpty, !trimmedPrompt.isEmpty else { return }
 
         if let editingTemplateID {
@@ -231,6 +271,15 @@ struct MeetingTemplatesManagerView: View {
             )
         }
         resetTemplateEditor()
+    }
+
+    private var isEditingTemplateInProgress: Bool {
+        isCreatingTemplate || editingTemplateID != nil
+    }
+
+    private func clearValidationErrors() {
+        showNameValidationError = false
+        showPromptValidationError = false
     }
 
     @ViewBuilder

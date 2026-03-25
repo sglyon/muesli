@@ -270,6 +270,7 @@ enum MeetingTemplates {
     static func normalizedCustomIcon(named icon: String?) -> String {
         let trimmed = icon?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return customIconFallback }
+        // Older configs stored rocket.fill for launch-style templates; remap it for compatibility.
         if trimmed == "rocket.fill" {
             return "paperplane.fill"
         }

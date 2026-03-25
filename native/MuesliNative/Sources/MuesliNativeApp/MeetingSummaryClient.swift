@@ -8,6 +8,7 @@ enum MeetingSummaryClient {
     private static let defaultOpenAIModel = "gpt-5.4-mini"
     private static let defaultOpenRouterModel = "stepfun/step-3.5-flash:free"
     private static let defaultChatGPTModel = "gpt-5.4-mini"
+    private static let defaultSummaryMaxOutputTokens = 2500
 
     private static let titleInstructions = """
     Generate a short, descriptive meeting title (3-7 words) from this transcript. \
@@ -67,7 +68,7 @@ enum MeetingSummaryClient {
             ],
             "reasoning": ["effort": "low"],
             "text": ["verbosity": "low"],
-            "max_output_tokens": 1200,
+            "max_output_tokens": defaultSummaryMaxOutputTokens,
         ]
 
         var request = URLRequest(url: openAIURL)
@@ -110,7 +111,7 @@ enum MeetingSummaryClient {
                 ["role": "system", "content": instructions],
                 ["role": "user", "content": "Meeting title: \(meetingTitle)\n\nRaw transcript:\n\(transcript)"],
             ],
-            "max_tokens": 1200,
+            "max_tokens": defaultSummaryMaxOutputTokens,
         ]
 
         var request = URLRequest(url: openRouterURL)

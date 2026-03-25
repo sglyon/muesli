@@ -75,6 +75,8 @@ public final class DictationStore {
         if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN folder_id INTEGER REFERENCES meeting_folders(id)", nil, nil, nil) != SQLITE_OK {
             // Column may already exist.
         }
+        // These template columns are also present in CREATE TABLE for fresh databases.
+        // The ALTER TABLE path upgrades pre-existing databases where meetings already exists.
         if sqlite3_exec(db, "ALTER TABLE meetings ADD COLUMN selected_template_id TEXT", nil, nil, nil) != SQLITE_OK {
             // Column may already exist.
         }
