@@ -219,6 +219,68 @@ struct AppConfigTests {
     }
 }
 
+@Suite("MeetingResummarizationPolicy")
+struct MeetingResummarizationPolicyTests {
+
+    @Test("resummarize preserves the existing meeting title")
+    func preservesExistingMeetingTitle() {
+        let meeting = MeetingRecord(
+            id: 42,
+            title: "Customer pilot follow-up",
+            startTime: "2026-03-24T10:00:00Z",
+            durationSeconds: 1800,
+            rawTranscript: "Transcript",
+            formattedNotes: "## Notes",
+            wordCount: 123,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            selectedTemplateID: MeetingTemplates.autoID,
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: ""
+        )
+
+        #expect(
+            MeetingResummarizationPolicy.plan(for: meeting) ==
+            MeetingResummarizationPlan(
+                promptTitle: "Customer pilot follow-up",
+                persistedTitle: "Customer pilot follow-up"
+            )
+        )
+    }
+
+    @Test("blank titles fall back to Meeting in prompts without overwriting storage")
+    func blankMeetingTitlesFallback() {
+        let meeting = MeetingRecord(
+            id: 43,
+            title: "   ",
+            startTime: "2026-03-24T10:00:00Z",
+            durationSeconds: 1800,
+            rawTranscript: "Transcript",
+            formattedNotes: "## Notes",
+            wordCount: 123,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            selectedTemplateID: MeetingTemplates.autoID,
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: ""
+        )
+
+        #expect(
+            MeetingResummarizationPolicy.plan(for: meeting) ==
+            MeetingResummarizationPlan(
+                promptTitle: "Meeting",
+                persistedTitle: "   "
+            )
+        )
+    }
+}
+
 @Suite("DictationState")
 struct DictationStateTests {
     @Test("raw values")

@@ -19,6 +19,7 @@ struct MeetingDetailView: View {
     @State private var documentMode: MeetingDocumentMode
     @State private var titleSaveTask: DispatchWorkItem?
     @State private var notesSaveTask: DispatchWorkItem?
+    @State private var summaryErrorMessage: String?
 
     init(
         meeting: MeetingRecord?,
@@ -38,30 +39,39 @@ struct MeetingDetailView: View {
     }
 
     var body: some View {
-        if let meeting {
-            VStack(alignment: .leading, spacing: 0) {
-                header(meeting)
+        Group {
+            if let meeting {
+                VStack(alignment: .leading, spacing: 0) {
+                    header(meeting)
 
-                Divider()
-                    .background(MuesliTheme.surfaceBorder)
+                    Divider()
+                        .background(MuesliTheme.surfaceBorder)
 
-                content(for: meeting)
+                    content(for: meeting)
+                }
+                .background(MuesliTheme.backgroundBase)
+                .onChange(of: meeting.id) { _, _ in
+                    syncLocalState(with: meeting)
+                }
+            } else {
+                VStack(spacing: MuesliTheme.spacing12) {
+                    Text("No meeting selected")
+                        .font(MuesliTheme.title3())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                    Text("Choose a meeting from the Meetings browser to open it here.")
+                        .font(MuesliTheme.callout())
+                        .foregroundStyle(MuesliTheme.textTertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(MuesliTheme.backgroundBase)
             }
-            .background(MuesliTheme.backgroundBase)
-            .onChange(of: meeting.id) { _, _ in
-                syncLocalState(with: meeting)
+        }
+        .alert("Couldn't Save Summary", isPresented: summaryErrorBinding) {
+            Button("OK", role: .cancel) {
+                summaryErrorMessage = nil
             }
-        } else {
-            VStack(spacing: MuesliTheme.spacing12) {
-                Text("No meeting selected")
-                    .font(MuesliTheme.title3())
-                    .foregroundStyle(MuesliTheme.textSecondary)
-                Text("Choose a meeting from the Meetings browser to open it here.")
-                    .font(MuesliTheme.callout())
-                    .foregroundStyle(MuesliTheme.textTertiary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(MuesliTheme.backgroundBase)
+        } message: {
+            Text(summaryErrorMessage ?? "The updated meeting notes could not be saved.")
         }
     }
 
@@ -206,10 +216,15 @@ struct MeetingDetailView: View {
         } else {
             iconButton("sparkles", label: primarySummaryActionLabel(for: meeting)) {
                 isSummarizing = true
-                let completion = { [meeting] in
+                let completion: (Result<Void, Error>) -> Void = { [meeting] result in
                     isSummarizing = false
-                    if let updated = appState.meetingRows.first(where: { $0.id == meeting.id }) {
-                        syncLocalState(with: updated)
+                    switch result {
+                    case .success:
+                        if let updated = appState.meetingRows.first(where: { $0.id == meeting.id }) {
+                            syncLocalState(with: updated)
+                        }
+                    case .failure(let error):
+                        summaryErrorMessage = error.localizedDescription
                     }
                 }
                 if hasPendingTemplateChange(for: meeting) {
@@ -479,12 +494,7 @@ struct MeetingDetailView: View {
         switch snapshot.kind {
         case .auto:
             return MeetingTemplates.auto.icon
-        case .builtin:
-            return MeetingTemplates.resolveDefinition(
-                id: snapshot.id,
-                customTemplates: appState.config.customMeetingTemplates
-            ).icon
-        case .custom:
+        case .builtin, .custom:
             return MeetingTemplates.resolveDefinition(
                 id: snapshot.id,
                 customTemplates: appState.config.customMeetingTemplates
@@ -519,6 +529,17 @@ struct MeetingDetailView: View {
         let item = DispatchWorkItem { c.updateMeetingNotes(id: meetingID, notes: notes) }
         notesSaveTask = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private var summaryErrorBinding: Binding<Bool> {
+        Binding(
+            get: { summaryErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    summaryErrorMessage = nil
+                }
+            }
+        )
     }
 
     private func syncLocalState(with meeting: MeetingRecord?) {

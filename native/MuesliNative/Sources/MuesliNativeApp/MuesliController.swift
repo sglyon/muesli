@@ -5,6 +5,37 @@ import Sparkle
 import TelemetryDeck
 import MuesliCore
 
+struct MeetingResummarizationPlan: Equatable {
+    let promptTitle: String
+    let persistedTitle: String
+}
+
+enum MeetingResummarizationPolicy {
+    static func plan(for meeting: MeetingRecord) -> MeetingResummarizationPlan {
+        let trimmed = meeting.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptTitle = trimmed.isEmpty ? "Meeting" : trimmed
+        return MeetingResummarizationPlan(
+            promptTitle: promptTitle,
+            persistedTitle: meeting.title
+        )
+    }
+}
+
+enum MeetingSummaryPersistenceError: Error, LocalizedError {
+    case failedToSaveSummary(underlying: Error)
+
+    var errorDescription: String? {
+        switch self {
+        case .failedToSaveSummary(let underlying):
+            let detail = underlying.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                return "The updated meeting notes could not be saved."
+            }
+            return "The updated meeting notes could not be saved. \(detail)"
+        }
+    }
+}
+
 @MainActor
 final class MuesliController: NSObject {
     private let runtime: RuntimePaths
@@ -527,12 +558,12 @@ final class MuesliController: NSObject {
         selectMeetingSummaryBackend(option)
     }
 
-    func resummarize(meeting: MeetingRecord, completion: @escaping () -> Void) {
+    func resummarize(meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
         let templateSnapshot = meetingTemplateSnapshot(for: meeting)
         resummarize(meeting: meeting, using: templateSnapshot, completion: completion)
     }
 
-    func applyMeetingTemplate(id: String, to meeting: MeetingRecord, completion: @escaping () -> Void) {
+    func applyMeetingTemplate(id: String, to meeting: MeetingRecord, completion: @escaping (Result<Void, Error>) -> Void) {
         let templateSnapshot = MeetingTemplates.resolveSnapshot(
             id: id,
             customTemplates: config.customMeetingTemplates
@@ -543,37 +574,38 @@ final class MuesliController: NSObject {
     private func resummarize(
         meeting: MeetingRecord,
         using templateSnapshot: MeetingTemplateSnapshot,
-        completion: @escaping () -> Void
+        completion: @escaping (Result<Void, Error>) -> Void
     ) {
         Task { [weak self] in
             guard let self else { return }
-            // Regenerate title from transcript
-            let newTitle: String
-            if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: meeting.rawTranscript, config: self.config),
-               !autoTitle.isEmpty {
-                newTitle = autoTitle
-            } else {
-                newTitle = meeting.title
-            }
+            let plan = MeetingResummarizationPolicy.plan(for: meeting)
             let notes = await MeetingSummaryClient.summarize(
                 transcript: meeting.rawTranscript,
-                meetingTitle: newTitle,
+                meetingTitle: plan.promptTitle,
                 config: self.config,
                 template: templateSnapshot
             )
-            try? self.dictationStore.updateMeetingSummary(
-                id: meeting.id,
-                title: newTitle,
-                formattedNotes: notes,
-                selectedTemplateID: templateSnapshot.id,
-                selectedTemplateName: templateSnapshot.name,
-                selectedTemplateKind: templateSnapshot.kind,
-                selectedTemplatePrompt: templateSnapshot.prompt
-            )
-            await MainActor.run {
-                self.syncAppState()
-                self.historyWindowController?.reload()
-                completion()
+
+            do {
+                try self.dictationStore.updateMeetingSummary(
+                    id: meeting.id,
+                    title: plan.persistedTitle,
+                    formattedNotes: notes,
+                    selectedTemplateID: templateSnapshot.id,
+                    selectedTemplateName: templateSnapshot.name,
+                    selectedTemplateKind: templateSnapshot.kind,
+                    selectedTemplatePrompt: templateSnapshot.prompt
+                )
+                await MainActor.run {
+                    self.syncAppState()
+                    self.historyWindowController?.reload()
+                    completion(.success(()))
+                }
+            } catch {
+                fputs("[muesli-native] failed to persist meeting summary: \(error)\n", stderr)
+                await MainActor.run {
+                    completion(.failure(MeetingSummaryPersistenceError.failedToSaveSummary(underlying: error)))
+                }
             }
         }
     }
