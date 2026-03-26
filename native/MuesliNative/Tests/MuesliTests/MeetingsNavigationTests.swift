@@ -83,7 +83,7 @@ struct MeetingsNavigationTests {
         #expect(controller.appState.meetingsNavigationState == .browser)
     }
 
-    @Test("showMeetingTemplatesManager routes to meetings home and presents manager")
+    @Test("showMeetingTemplatesManager preserves current meetings context and presents manager")
     func showMeetingTemplatesManagerPresentsManager() {
         let controller = makeController()
 
@@ -94,8 +94,30 @@ struct MeetingsNavigationTests {
         controller.showMeetingTemplatesManager()
 
         #expect(controller.appState.selectedTab == .meetings)
-        #expect(controller.appState.meetingsNavigationState == .browser)
+        #expect(controller.appState.meetingsNavigationState == .document(404))
         #expect(controller.appState.isMeetingTemplatesManagerPresented == true)
+    }
+
+    @Test("deleteCustomMeetingTemplate resets default template when deleting the active default")
+    func deletingDefaultCustomTemplateResetsDefaultToAuto() {
+        let controller = makeController()
+        let customTemplate = CustomMeetingTemplate(
+            id: "tmpl_customer_followup",
+            name: "Customer Follow-Up",
+            prompt: "## Summary",
+            icon: "person.2.fill"
+        )
+
+        controller.updateConfig {
+            $0.customMeetingTemplates = [customTemplate]
+            $0.defaultMeetingTemplateID = customTemplate.id
+        }
+
+        controller.deleteCustomMeetingTemplate(id: customTemplate.id)
+
+        #expect(controller.config.defaultMeetingTemplateID == MeetingTemplates.autoID)
+        #expect(controller.appState.config.defaultMeetingTemplateID == MeetingTemplates.autoID)
+        #expect(controller.config.customMeetingTemplates.isEmpty)
     }
 
     private func makeMeeting(id: Int64, title: String) -> MeetingRecord {

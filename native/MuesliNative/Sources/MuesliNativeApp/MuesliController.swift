@@ -521,7 +521,6 @@ final class MuesliController: NSObject {
 
     func showMeetingTemplatesManager() {
         appState.selectedTab = .meetings
-        appState.meetingsNavigationState = .browser
         appState.isMeetingTemplatesManagerPresented = true
     }
 
