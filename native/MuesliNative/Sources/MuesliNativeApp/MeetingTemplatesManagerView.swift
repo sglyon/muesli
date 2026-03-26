@@ -13,6 +13,7 @@ struct MeetingTemplatesManagerView: View {
     @State private var draftTemplateIcon = MeetingTemplates.customIconFallback
     @State private var showNameValidationError = false
     @State private var showPromptValidationError = false
+    @State private var templateToDelete: CustomMeetingTemplate?
 
     var body: some View {
         VStack(alignment: .leading, spacing: MuesliTheme.spacing20) {
@@ -70,6 +71,27 @@ struct MeetingTemplatesManagerView: View {
         .padding(MuesliTheme.spacing24)
         .frame(minWidth: 760, minHeight: 520)
         .background(MuesliTheme.backgroundBase)
+        .alert(
+            "Delete \"\(templateToDelete?.name ?? "")\"?",
+            isPresented: Binding(
+                get: { templateToDelete != nil },
+                set: { if !$0 { templateToDelete = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                templateToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                guard let template = templateToDelete else { return }
+                controller.deleteCustomMeetingTemplate(id: template.id)
+                if editingTemplateID == template.id {
+                    resetTemplateEditor()
+                }
+                templateToDelete = nil
+            }
+        } message: {
+            Text("This template will be permanently removed. Existing meetings will keep their saved template snapshot.")
+        }
     }
 
     @ViewBuilder
@@ -116,10 +138,7 @@ struct MeetingTemplatesManagerView: View {
                         beginEditingTemplate(template)
                     }
                     actionButton("Delete", systemImage: "trash", role: .destructive) {
-                        controller.deleteCustomMeetingTemplate(id: template.id)
-                        if editingTemplateID == template.id {
-                            resetTemplateEditor()
-                        }
+                        templateToDelete = template
                     }
                 }
             }
