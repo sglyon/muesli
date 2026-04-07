@@ -92,6 +92,7 @@ final class FloatingIndicatorController {
     var onCancelToggleDictation: (() -> Void)?
     var isToggleDictation = false
     private var stopLayer: CALayer?
+    private var transcribingTitle = "Transcribing"
     var hotkeyLabel: String = "Left Cmd"
 
     init(configStore: ConfigStore) {
@@ -182,10 +183,19 @@ final class FloatingIndicatorController {
         }
     }
 
+    func setTranscribingTitle(_ title: String, config: AppConfig) {
+        transcribingTitle = title
+        guard state == .transcribing else { return }
+        setState(.transcribing, config: config)
+    }
+
     func setState(_ state: DictationState, config: AppConfig) {
         let previousState = self.state
         let previousHover = isHovered
         self.state = state
+        if state != .transcribing {
+            transcribingTitle = "Transcribing"
+        }
         if state != .idle {
             isHovered = false
         }
@@ -502,6 +512,22 @@ final class FloatingIndicatorController {
         self.textLabel = textLabel
     }
 
+    static func defaultIndicatorCenter(in visibleFrame: NSRect, idleSize: NSSize = NSSize(width: 44, height: 28)) -> CGPoint {
+        CGPoint(
+            x: visibleFrame.maxX - idleSize.width / 2 - 8,
+            y: visibleFrame.midY
+        )
+    }
+
+    static func isUsableIndicatorCenter(
+        _ center: CGPoint,
+        in visibleFrame: NSRect,
+        size: NSSize
+    ) -> Bool {
+        let allowedRect = visibleFrame.insetBy(dx: size.width / 2, dy: size.height / 2)
+        return allowedRect.contains(center)
+    }
+
     private func frameForState(_ state: DictationState, config: AppConfig) -> NSRect {
         guard let screen = NSScreen.main?.visibleFrame else {
             return NSRect(x: 0, y: 0, width: 64, height: 28)
@@ -521,14 +547,11 @@ final class FloatingIndicatorController {
         let center: CGPoint
         if let currentFrame = panel?.frame, currentFrame.width > 0 {
             center = CGPoint(x: currentFrame.midX, y: currentFrame.midY)
-        } else if let saved = config.indicatorOrigin {
+        } else if let saved = config.indicatorOrigin,
+                  Self.isUsableIndicatorCenter(CGPoint(x: saved.x, y: saved.y), in: screen, size: size) {
             center = CGPoint(x: saved.x, y: saved.y)
         } else {
-            let defaultSize = NSSize(width: 44, height: 28)
-            center = CGPoint(
-                x: screen.maxX - defaultSize.width / 2 - 8,
-                y: screen.minY + (screen.height * 0.56)
-            )
+            center = Self.defaultIndicatorCenter(in: screen)
         }
 
         let x = min(max(center.x - size.width / 2, screen.minX), screen.maxX - size.width)
@@ -573,7 +596,7 @@ final class FloatingIndicatorController {
                 .colorWith(hex: 0xD99A11, alpha: 0.72),
                 .colorWith(hex: 0xFFFFFF, alpha: 0.24),
                 "✍️",
-                "Transcribing",
+                transcribingTitle,
                 .colorWith(hex: 0x1A140D, alpha: 0.95),
                 .black,
                 1.0
