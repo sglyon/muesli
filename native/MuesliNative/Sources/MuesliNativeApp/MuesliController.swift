@@ -311,14 +311,26 @@ final class MuesliController: NSObject {
         )) ?? []
         appState.dictationRows = rows
         appState.hasMoreDictations = rows.count >= appState.dictationPageSize
-        appState.meetingRows = (try? dictationStore.recentMeetings(limit: 50)) ?? []
+        appState.meetingRows = (try? dictationStore.recentMeetings(limit: 200, folderID: appState.selectedFolderID)) ?? []
+        let counts = (try? dictationStore.meetingCounts()) ?? (total: 0, byFolder: [:])
+        appState.totalMeetingCount = counts.total
+        appState.meetingCountsByFolder = counts.byFolder
         if let selectedMeetingID = appState.selectedMeetingID {
             appState.selectedMeetingRecord = appState.meetingRows.first(where: { $0.id == selectedMeetingID })
                 ?? meeting(id: selectedMeetingID)
         } else {
             appState.selectedMeetingRecord = nil
         }
-        appState.folders = (try? dictationStore.listFolders()) ?? []
+        let allFolders = (try? dictationStore.listFolders()) ?? []
+        if config.folderOrder.isEmpty && !allFolders.isEmpty {
+            updateConfig { $0.folderOrder = allFolders.map(\.id) }
+        }
+        let order = config.folderOrder
+        appState.folders = allFolders.sorted { a, b in
+            let ai = order.firstIndex(of: a.id) ?? Int.max
+            let bi = order.firstIndex(of: b.id) ?? Int.max
+            return ai < bi
+        }
         appState.dictationStats = dictationStats()
         appState.meetingStats = meetingStats()
         appState.selectedBackend = selectedBackend
@@ -675,6 +687,17 @@ final class MuesliController: NSObject {
 
     func renameFolder(id: Int64, name: String) {
         try? dictationStore.renameFolder(id: id, name: name)
+        syncAppState()
+    }
+
+    func reorderFolders(ids: [Int64]) {
+        updateConfig { $0.folderOrder = ids }
+        syncAppState()
+    }
+
+    func createFolderAndMoveMeeting(name: String, meetingID: Int64) {
+        guard let folderID = try? dictationStore.createFolder(name: name) else { return }
+        try? dictationStore.moveMeeting(id: meetingID, toFolder: folderID)
         syncAppState()
     }
 
