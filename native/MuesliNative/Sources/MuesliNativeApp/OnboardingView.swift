@@ -370,7 +370,7 @@ struct OnboardingView: View {
             steps.append(("speaker.wave.2.fill", "System Audio", "Capture meeting audio from other participants", systemAudioGranted, {
                 Task {
                     await CoreAudioSystemRecorder.requestSystemAudioAccess()
-                    self.systemAudioGranted = true
+                    self.systemAudioGranted = CoreAudioSystemRecorder.checkSystemAudioPermission()
                 }
             }))
             steps.append(("rectangle.dashed.badge.record", "Screen Recording", "Capture screen content for richer meeting context", screenRecordingGranted, {
@@ -556,6 +556,9 @@ struct OnboardingView: View {
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringGranted = CGPreflightListenEventAccess()
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        if appState.config.useCoreAudioTap && !systemAudioGranted {
+            systemAudioGranted = CoreAudioSystemRecorder.checkSystemAudioPermission()
+        }
     }
 
     private func saveProgress(atStep step: Int? = nil) {

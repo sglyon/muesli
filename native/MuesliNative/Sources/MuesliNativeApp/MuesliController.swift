@@ -1222,9 +1222,7 @@ final class MuesliController: NSObject {
                 self.statusBarController?.refresh()
                 self.setState(.idle)
 
-                let isSystemAudioError = error.localizedDescription.contains("tap") ||
-                    error.localizedDescription.contains("Aggregate") ||
-                    error.localizedDescription.contains("AUHAL")
+                let isSystemAudioError = error is CoreAudioSystemRecorder.RecorderError
                 let alert = NSAlert()
                 alert.alertStyle = .warning
                 if isSystemAudioError {

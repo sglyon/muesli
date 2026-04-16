@@ -483,7 +483,7 @@ final class CoreAudioSystemRecorder: SystemAudioCapturing {
 
     // MARK: - Helpers
 
-    private enum RecorderError: LocalizedError {
+    enum RecorderError: LocalizedError {
         case fileCreationFailed
         case tapCreationFailed(OSStatus)
         case aggregateDeviceCreationFailed(OSStatus)
