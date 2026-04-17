@@ -47,10 +47,14 @@ final class MuesliController: NSObject {
     // MARK: - Live transcript panel + clipboard copy (Cmd+Shift+C/T during meeting)
     private var liveTranscriptController: LiveTranscriptPanelController?
     private var activeMeetingTitle: String = "Meeting"
+    private var activeMeetingID: String = ""
     private var transcriptKeyMonitorGlobal: Any?
     private var transcriptKeyMonitorLocal: Any?
     private var lastMicOffset: Int = 0
     private var lastSystemOffset: Int = 0
+
+    // MARK: - Live Coach sidecar (lazy; only runs when liveCoach.enabled)
+    private var liveCoachSidecar: LiveCoachSidecar?
 
     init(runtime: RuntimePaths) {
         let loadedConfig = configStore.load()
@@ -202,6 +206,7 @@ final class MuesliController: NSObject {
         micActivityMonitor.stop()
         meetingNotification.close()
         recorder.cancel()
+        shutdownCoachSidecar()
         Task {
             await transcriptionCoordinator.shutdown()
         }
@@ -574,6 +579,10 @@ final class MuesliController: NSObject {
         guard !isMeetingRecording(), !isStartingMeetingRecording else { return }
         isStartingMeetingRecording = true
         activeMeetingTitle = title
+        activeMeetingID = UUID().uuidString
+        if config.liveCoach.enabled {
+            launchCoachSidecarIfNeeded()
+        }
         let meetingSession = MeetingSession(
             title: title,
             calendarEventID: nil,
@@ -732,8 +741,67 @@ final class MuesliController: NSObject {
         if liveTranscriptController == nil {
             liveTranscriptController = LiveTranscriptPanelController()
         }
-        liveTranscriptController?.toggle(session: session, title: activeMeetingTitle)
+        liveTranscriptController?.toggle(
+            session: session,
+            title: activeMeetingTitle,
+            meetingID: activeMeetingID,
+            config: config,
+            coachSidecar: liveCoachSidecar
+        )
         statusBarController?.refresh()
+    }
+
+    private func launchCoachSidecarIfNeeded() {
+        if liveCoachSidecar != nil { return }
+        let sidecar = LiveCoachSidecar()
+        liveCoachSidecar = sidecar
+        Task {
+            do {
+                try await sidecar.launch()
+            } catch {
+                fputs("[muesli-native] live coach sidecar launch failed: \(error)\n", stderr)
+                self.liveCoachSidecar = nil
+            }
+        }
+    }
+
+    func shutdownCoachSidecar() {
+        liveCoachSidecar?.shutdown()
+        liveCoachSidecar = nil
+    }
+
+    /// Wipes the entire coach conversation history + working memory.
+    /// Starts the sidecar if needed, issues a DELETE, then shuts it back down
+    /// if no meeting is active.
+    func resetCoachMemory() {
+        Task {
+            let sidecar: LiveCoachSidecar
+            let startedJustForThis: Bool
+            if let existing = liveCoachSidecar, existing.isRunning {
+                sidecar = existing
+                startedJustForThis = false
+            } else {
+                let fresh = LiveCoachSidecar()
+                do {
+                    try await fresh.launch()
+                } catch {
+                    fputs("[muesli-native] resetCoachMemory: failed to launch sidecar: \(error)\n", stderr)
+                    return
+                }
+                sidecar = fresh
+                startedJustForThis = true
+            }
+            let client = LiveCoachClient(sidecar: sidecar)
+            do {
+                try await client.deleteResource(id: "user-muesli")
+                fputs("[muesli-native] coach memory reset\n", stderr)
+            } catch {
+                fputs("[muesli-native] resetCoachMemory failed: \(error)\n", stderr)
+            }
+            if startedJustForThis {
+                sidecar.shutdown()
+            }
+        }
     }
 
     var isLiveTranscriptVisible: Bool {

@@ -87,6 +87,23 @@ if [[ -d "$ROOT/assets/fonts" ]]; then
   ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
 fi
 
+# Bundle the Live Coach sidecar (Bun-compiled single binary). Skip gracefully
+# when Bun isn't installed so contributors without the sidecar toolchain can
+# still build the Swift app — they just won't get live coaching.
+SIDECAR_DIR="$ROOT/native/sidecar/muesli-agent"
+if [[ -d "$SIDECAR_DIR" ]] && command -v bun >/dev/null 2>&1; then
+  echo "Building muesli-agent sidecar..."
+  if [[ "${MUESLI_SIDECAR_NATIVE_ONLY:-0}" == "1" ]]; then
+    MUESLI_SIDECAR_NATIVE_ONLY=1 "$SIDECAR_DIR/build.sh"
+  else
+    "$SIDECAR_DIR/build.sh"
+  fi
+  cp "$SIDECAR_DIR/dist/muesli-agent" "$STAGED_APP_DIR/Contents/Resources/muesli-agent"
+  chmod +x "$STAGED_APP_DIR/Contents/Resources/muesli-agent"
+else
+  echo "Skipping muesli-agent sidecar (bun not found or sidecar source missing)"
+fi
+
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -174,6 +191,13 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   codesign --force --options runtime --timestamp \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR/Contents/MacOS/muesli-cli"
+
+  # Sign the Live Coach sidecar if it was bundled.
+  if [[ -f "$APP_DIR/Contents/Resources/muesli-agent" ]]; then
+    codesign --force --options runtime --timestamp \
+      --sign "$SIGN_IDENTITY" \
+      "$APP_DIR/Contents/Resources/muesli-agent"
+  fi
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
   ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"

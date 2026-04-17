@@ -1,0 +1,29 @@
+{
+  "name": "muesli-agent",
+  "version": "0.1.0",
+  "description": "Local agent sidecar for Muesli Live Coach",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test",
+    "build": "./build.sh",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.71",
+    "@ai-sdk/openai": "^3.0.53",
+    "@ai-sdk/provider": "^3.0.8",
+    "@libsql/darwin-arm64": "*",
+    "@mastra/core": "^1.25.0",
+    "@mastra/libsql": "^1.8.1",
+    "@mastra/memory": "^1.15.1",
+    "ai": "^6.0.168",
+    "hono": "^4.12.14",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

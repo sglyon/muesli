@@ -15,15 +15,34 @@ final class LiveTranscriptViewModel: ObservableObject {
 
 struct LiveTranscriptView: View {
     @ObservedObject var viewModel: LiveTranscriptViewModel
+    var coachViewModel: LiveCoachViewModel?
     var onClose: (() -> Void)?
+    var onSendCoachMessage: ((String) -> Void)?
 
     var body: some View {
+        Group {
+            if let coachViewModel {
+                HSplitView {
+                    transcriptColumn
+                        .frame(minWidth: 280, idealWidth: 420)
+                    LiveCoachView(viewModel: coachViewModel) { text in
+                        onSendCoachMessage?(text)
+                    }
+                    .frame(minWidth: 320, idealWidth: 480)
+                }
+            } else {
+                transcriptColumn
+            }
+        }
+        .background(MuesliTheme.backgroundBase)
+    }
+
+    private var transcriptColumn: some View {
         VStack(spacing: 0) {
             headerBar
             Divider().background(MuesliTheme.surfaceBorder)
             transcriptList
         }
-        .background(MuesliTheme.backgroundBase)
     }
 
     // MARK: - Header

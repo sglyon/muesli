@@ -214,6 +214,69 @@ struct HotkeyConfig: Codable, Equatable {
     static let `default` = HotkeyConfig()
 }
 
+struct LiveCoachSettings: Codable, Equatable {
+    var enabled: Bool = false
+    var provider: String = "anthropic"              // "anthropic" | "openai" | "chatgpt"
+    var anthropicModel: String = "claude-sonnet-4-6"
+    var openAIModel: String = "gpt-5.4-mini"
+    var chatGPTModel: String = "gpt-5.4-mini"
+    var anthropicAPIKey: String = ""
+    var systemPrompt: String = LiveCoachSettings.defaultSystemPrompt
+    var agentInstructions: String = ""
+    var proactiveEnabled: Bool = true
+    var minCharsBeforeTrigger: Int = 200
+    var enableSemanticRecall: Bool = true
+    var preserveThreadAcrossMeetings: Bool = true
+
+    static let defaultSystemPrompt: String = """
+    You are a real-time sales coach for Spencer Lyon at Arete Intelligence (data engineering, data science, and AI transformation for mid-market companies). You observe a live meeting transcript. When you receive a <transcript_update>, provide 1-3 short, actionable coaching tips — tone, questions to ask next, objections to anticipate, or discovery threads to pull on. When you receive a <user_message>, answer directly. Keep replies tight (under 120 words unless asked).
+    """
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case provider
+        case anthropicModel = "anthropic_model"
+        case openAIModel = "openai_model"
+        case chatGPTModel = "chatgpt_model"
+        case anthropicAPIKey = "anthropic_api_key"
+        case systemPrompt = "system_prompt"
+        case agentInstructions = "agent_instructions"
+        case proactiveEnabled = "proactive_enabled"
+        case minCharsBeforeTrigger = "min_chars_before_trigger"
+        case enableSemanticRecall = "enable_semantic_recall"
+        case preserveThreadAcrossMeetings = "preserve_thread_across_meetings"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = LiveCoachSettings()
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? defaults.enabled
+        provider = (try? c.decode(String.self, forKey: .provider)) ?? defaults.provider
+        anthropicModel = (try? c.decode(String.self, forKey: .anthropicModel)) ?? defaults.anthropicModel
+        openAIModel = (try? c.decode(String.self, forKey: .openAIModel)) ?? defaults.openAIModel
+        chatGPTModel = (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
+        anthropicAPIKey = (try? c.decode(String.self, forKey: .anthropicAPIKey)) ?? defaults.anthropicAPIKey
+        systemPrompt = (try? c.decode(String.self, forKey: .systemPrompt)) ?? defaults.systemPrompt
+        agentInstructions = (try? c.decode(String.self, forKey: .agentInstructions)) ?? defaults.agentInstructions
+        proactiveEnabled = (try? c.decode(Bool.self, forKey: .proactiveEnabled)) ?? defaults.proactiveEnabled
+        minCharsBeforeTrigger = (try? c.decode(Int.self, forKey: .minCharsBeforeTrigger)) ?? defaults.minCharsBeforeTrigger
+        enableSemanticRecall = (try? c.decode(Bool.self, forKey: .enableSemanticRecall)) ?? defaults.enableSemanticRecall
+        preserveThreadAcrossMeetings = (try? c.decode(Bool.self, forKey: .preserveThreadAcrossMeetings)) ?? defaults.preserveThreadAcrossMeetings
+    }
+
+    /// Model ID used for the currently selected provider. Returns empty for unknown providers.
+    var activeModel: String {
+        switch provider {
+        case "anthropic": return anthropicModel
+        case "openai": return openAIModel
+        case "chatgpt": return chatGPTModel
+        default: return ""
+        }
+    }
+}
+
 struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var sttBackend: String = BackendOption.whisper.backend
@@ -242,6 +305,7 @@ struct AppConfig: Codable {
     var customWords: [CustomWord] = [
         CustomWord(word: "muesli", replacement: "muesli"),
     ]
+    var liveCoach: LiveCoachSettings = LiveCoachSettings()
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
@@ -269,6 +333,7 @@ struct AppConfig: Codable {
         case hasCompletedOnboarding = "has_completed_onboarding"
         case userName = "user_name"
         case customWords = "custom_words"
+        case liveCoach = "live_coach"
     }
 
     init() {}
@@ -301,6 +366,7 @@ struct AppConfig: Codable {
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
+        liveCoach = (try? c.decode(LiveCoachSettings.self, forKey: .liveCoach)) ?? defaults.liveCoach
     }
 }
 

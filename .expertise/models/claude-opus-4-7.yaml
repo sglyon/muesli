@@ -1,0 +1,44 @@
+project: muesli
+last_updated: 2026-04-17
+
+overview: |
+  Muesli is a macOS native app (Swift) for meeting recording + dictation.
+  Main Swift package at native/MuesliNative/. Uses FluidAudio (external) for
+  VAD, ASR, and diarization. Tests live in Tests/MuesliTests/.
+
+build_and_test:
+  test_command: "cd native/MuesliNative && swift test"
+  filter_example: "swift test --filter TranscriptFormatterTests"
+  notes:
+    - "Tests run fast (~40s total for 221 tests, 41 suites)."
+    - "Swift Testing framework (not XCTest) — uses @Test and #expect."
+
+key_architecture:
+  meeting_pipeline: |
+    Mic + system audio recorded in parallel; VAD-driven chunk rotation
+    (3s min, 60s max). Per-chunk: mic transcribes first, then system
+    transcribes + diarizes (serialized to avoid CoreML MLMultiArray races).
+    TranscriptFormatter.merge() attributes tokens to speakers via time
+    overlap with diarization segments, with stream-overlap dedup (Jaccard).
+
+  critical_invariant:
+    name: "token-level timing preserved through chunks"
+    why: |
+      If per-chunk segments collapse to start==end==chunkOffset (a point),
+      diarization time-overlap matching only hits the first overlapping
+      speaker. Multi-speaker chunks lose all but the first speaker's
+      attribution. Fixed 2026-04-17 in MeetingSession.rotateChunk for both
+      mic and system streams.
+    how_to_apply: |
+      When touching MeetingSession chunk accumulation, preserve result.segments
+      with chunkOffset added, not just a single collapsed SpeechSegment.
+
+gotchas:
+  - "CoreML race: system transcription must await mic task (EXC_BAD_ACCESS otherwise)."
+  - "Speaker database resets per meeting — no persistent profiles across sessions."
+  - "Batch diarization at meeting end may re-identify speakers already matched during chunks."
+
+user_preferences:
+  commits: "no Claude signatures, no Co-Authored-By, no sign-offs"
+  initials: "SGL"
+  github: "sglyon"

@@ -11,34 +11,78 @@ final class LiveTranscriptPanelController {
     private var lastMicCount = 0
     private var lastSystemCount = 0
 
+    // Live Coach plumbing (present only when enabled in settings).
+    private var coachEngine: LiveCoachEngine?
+    private weak var coachSidecar: LiveCoachSidecar?
+    private var currentThreadId: String?
+
     var isVisible: Bool { panel?.isVisible ?? false }
 
-    func show(session: MeetingSession, title: String) {
+    func show(
+        session: MeetingSession,
+        title: String,
+        meetingID: String,
+        config: AppConfig,
+        coachSidecar: LiveCoachSidecar?
+    ) {
         meetingSession = session
         lastMicCount = 0
         lastSystemCount = 0
         viewModel.entries = []
         viewModel.meetingTitle = title
 
+        self.coachSidecar = coachSidecar
+        currentThreadId = "meeting-\(meetingID)"
+
+        if config.liveCoach.enabled, let sidecar = coachSidecar, sidecar.isRunning {
+            let client = LiveCoachClient(sidecar: sidecar)
+            let engine = LiveCoachEngine(
+                client: client,
+                session: session,
+                settings: config.liveCoach,
+                config: config,
+                resourceId: "user-muesli",
+                threadId: currentThreadId!
+            )
+            self.coachEngine = engine
+            Task { await engine.bootstrap() }
+        } else {
+            self.coachEngine = nil
+        }
+
         if panel == nil {
             buildPanel()
         }
         panel?.makeKeyAndOrderFront(nil)
         startPolling()
-        // Run an immediate poll so the panel isn't empty if segments already exist
         poll()
     }
 
     func hide() {
         stopPolling()
         panel?.orderOut(nil)
+        if let engine = coachEngine, let threadId = currentThreadId, let coachSidecar {
+            // If the user opted out of cross-meeting memory, delete the thread on close.
+            let preserve = engine.preserveThreadPreference
+            if !preserve, coachSidecar.isRunning {
+                Task { try? await LiveCoachClient(sidecar: coachSidecar).deleteThread(id: threadId) }
+            }
+        }
+        coachEngine = nil
+        currentThreadId = nil
     }
 
-    func toggle(session: MeetingSession, title: String) {
+    func toggle(
+        session: MeetingSession,
+        title: String,
+        meetingID: String,
+        config: AppConfig,
+        coachSidecar: LiveCoachSidecar?
+    ) {
         if isVisible {
             hide()
         } else {
-            show(session: session, title: title)
+            show(session: session, title: title, meetingID: meetingID, config: config, coachSidecar: coachSidecar)
         }
     }
 
@@ -46,8 +90,9 @@ final class LiveTranscriptPanelController {
 
     private func buildPanel() {
         let screen = NSScreen.main ?? NSScreen.screens.first!
-        let panelWidth: CGFloat = 380
-        let panelHeight: CGFloat = 500
+        let hasCoach = coachEngine != nil
+        let panelWidth: CGFloat = hasCoach ? 900 : 380
+        let panelHeight: CGFloat = hasCoach ? 600 : 500
         let margin: CGFloat = 20
         let x = screen.visibleFrame.maxX - panelWidth - margin
         let y = screen.visibleFrame.midY - panelHeight / 2
@@ -67,11 +112,14 @@ final class LiveTranscriptPanelController {
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = true
         panel.backgroundColor = NSColor(red: 0.086, green: 0.090, blue: 0.098, alpha: 0.95)
-        panel.minSize = NSSize(width: 280, height: 200)
+        panel.minSize = NSSize(width: hasCoach ? 640 : 280, height: hasCoach ? 420 : 200)
 
-        let rootView = LiveTranscriptView(viewModel: viewModel) { [weak self] in
-            self?.hide()
-        }
+        let rootView = LiveTranscriptView(
+            viewModel: viewModel,
+            coachViewModel: coachEngine?.viewModel,
+            onClose: { [weak self] in self?.hide() },
+            onSendCoachMessage: { [weak self] text in self?.coachEngine?.sendUserMessage(text) }
+        )
         panel.contentView = NSHostingView(rootView: rootView)
 
         self.panel = panel
@@ -81,8 +129,6 @@ final class LiveTranscriptPanelController {
 
     private func startPolling() {
         stopPolling()
-        // Use a Timer directly on the main run loop (no Task wrapper needed since
-        // the class is @MainActor and the timer fires on the main thread).
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.poll()
         }
@@ -120,7 +166,6 @@ final class LiveTranscriptPanelController {
             meetingStart: meetingStart
         )
 
-        // Parse "[HH:mm:ss] Speaker: text" lines into stable entries
         let lines = merged.components(separatedBy: "\n")
         var entries: [TranscriptEntry] = []
         for (index, line) in lines.enumerated() where !line.isEmpty {
@@ -135,5 +180,7 @@ final class LiveTranscriptPanelController {
             entries.append(TranscriptEntry(id: index, timestamp: timestamp, speaker: speaker, text: text))
         }
         viewModel.entries = entries
+
+        coachEngine?.onTranscriptTick()
     }
 }
