@@ -25,5 +25,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.6.0"
+  },
+  "patchedDependencies": {
+    "libsql@0.5.29": "patches/libsql@0.5.29.patch"
   }
 }

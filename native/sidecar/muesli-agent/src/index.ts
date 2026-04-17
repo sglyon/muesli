@@ -1,11 +1,8 @@
-// Force the bundler to embed the libsql native addon so it ships inside the
-// compiled binary. libsql uses dynamic require() to pick a platform-specific
-// target at runtime, which Bun's static analyzer can't resolve on its own.
-// Importing it here keeps it in the bundle graph. We currently only embed the
-// arm64 addon; x64 support would need a separate universal build.
-// @ts-expect-error — purely for bundler side-effect, not used
-import * as _libsqlDarwinArm64 from '@libsql/darwin-arm64';
-void _libsqlDarwinArm64;
+// libsql's native .node addon ships on disk next to the compiled binary
+// because Bun's --compile cannot embed .node files. The libsql package itself
+// is patched (see patches/libsql@*.patch) to look for the addon at
+// `<execDir>/native_modules/@libsql/<target>/index.node` before falling back
+// to its normal resolution. build.sh copies the addon into place.
 
 import { generateToken } from './auth.ts';
 import { createApp } from './server.ts';
@@ -17,6 +14,11 @@ const app = createApp({ token });
 const server = Bun.serve({
   port: 0,
   hostname: '127.0.0.1',
+  // Coach turns can take 30+ seconds for a long generation. Bun's default
+  // 10s idle timeout was killing in-flight SSE streams, which caused AI SDK
+  // to retry and duplicate assistant messages in memory. 240s gives plenty
+  // of headroom for any plausible single-turn coach response.
+  idleTimeout: 240,
   fetch: app.fetch,
 });
 

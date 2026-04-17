@@ -13,8 +13,17 @@ bun install --frozen-lockfile || bun install
 mkdir -p dist
 
 bun build src/index.ts --compile --outfile=dist/muesli-agent
+
+# Bun --compile cannot bundle .node native addons — they must ship on disk.
+# Copy the libsql arm64 addon to a sibling directory the dlopen shim looks at
+# (path.dirname(process.execPath)/native_modules/@libsql/<target>/index.node).
+NATIVE_MOD_DIR="dist/native_modules/@libsql/darwin-arm64"
+mkdir -p "$NATIVE_MOD_DIR"
+cp node_modules/@libsql/darwin-arm64/index.node "$NATIVE_MOD_DIR/index.node"
+
 echo "Built muesli-agent at dist/muesli-agent ($(uname -m))"
-# v1 ships arm64 only; the embedded libsql native addon is platform-specific
-# and Bun's --compile flow does not yet bundle a cross-arch addon cleanly.
-# Intel Mac support will require producing a separate binary on an x64 host
-# (or with an x64-installed @libsql/darwin-x64) and lipo-merging.
+echo "  Sideloaded native addon at $NATIVE_MOD_DIR/index.node"
+# v1 ships arm64 only; the libsql native addon is platform-specific and Bun's
+# --compile flow does not yet bundle a cross-arch addon. Intel Mac support
+# will require producing a separate binary on an x64 host with the matching
+# @libsql/darwin-x64 addon installed, then lipo-merging.

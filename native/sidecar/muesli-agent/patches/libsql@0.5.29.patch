@@ -1,0 +1,37 @@
+diff --git a/index.js b/index.js
+index e24987954ec427320f51fd8037f9754b60ffa363..d7f4e511ee1e5c6ec74020719695803a1b5675ca 100644
+--- a/index.js
++++ b/index.js
+@@ -2,6 +2,7 @@
+ 
+ const { load, currentTarget } = require("@neon-rs/load");
+ const { familySync, GLIBC, MUSL } = require("detect-libc");
++const path = require("path");
+ 
+ function requireNative() {
+   if (process.env.LIBSQL_JS_DEV) {
+@@ -23,6 +24,24 @@ function requireNative() {
+   if (target === "linux-arm-gnueabihf" && familySync() == MUSL) {
+       target = "linux-arm-musleabihf";
+   }
++  // MUESLI_PATCHED: Bun's --compile flow cannot embed .node addons, and the
++  // template-literal require below cannot be intercepted by Bun.plugin().
++  // Try the addon side-loaded next to the running binary first; fall back to
++  // the original dynamic require for dev / non-compiled execution.
++  try {
++    const sideloadPath = path.join(
++      path.dirname(process.execPath),
++      "native_modules",
++      "@libsql",
++      target,
++      "index.node",
++    );
++    const m = { exports: {} };
++    process.dlopen(m, sideloadPath);
++    return m.exports;
++  } catch (_e) {
++    // Fall through to the standard resolver.
++  }
+   return require(`@libsql/${target}`);
+ }
+ 
