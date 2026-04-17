@@ -262,6 +262,12 @@ final class MuesliController: NSObject {
                 backend: self.selectedBackend,
                 enablePostProcessor: self.config.enablePostProcessor && ppOption != nil
             )
+            if self.selectedMeetingTranscriptionBackend != self.selectedBackend {
+                await self.transcriptionCoordinator.preload(
+                    backend: self.selectedMeetingTranscriptionBackend,
+                    enablePostProcessor: false
+                )
+            }
             await MainActor.run {
                 self.refreshUI()
             }

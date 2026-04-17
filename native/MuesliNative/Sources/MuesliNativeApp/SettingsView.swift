@@ -169,6 +169,7 @@ struct SettingsView: View {
 
     private let sharedContextDescription =
         "Uses nearby app text for dictation cleanup and meeting summaries, plus OCR context for meetings when available. All processing stays on-device."
+    private let customIndicatorPositionLabel = "Custom (drag to reposition)"
 
     private var settingsPanePicker: some View {
         HStack {
@@ -434,10 +435,15 @@ struct SettingsView: View {
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Indicator position") {
+                    let isCustom = appState.config.indicatorAnchor == .custom
+                    let selection = isCustom ? customIndicatorPositionLabel : appState.config.indicatorAnchor.label
+                    let options = (isCustom ? [customIndicatorPositionLabel] : [])
+                        + IndicatorAnchor.allCases.filter { $0 != .custom }.map(\.label)
                     settingsMenu(
-                        selection: appState.config.indicatorAnchor.label,
-                        options: IndicatorAnchor.allCases.filter { $0 != .custom }.map(\.label)
+                        selection: selection,
+                        options: options
                     ) { label in
+                        if label == customIndicatorPositionLabel { return }
                         guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
                         controller.updateConfig { $0.indicatorAnchor = anchor }
                         controller.refreshIndicatorVisibility()
