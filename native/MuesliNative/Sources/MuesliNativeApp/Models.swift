@@ -92,14 +92,6 @@ struct BackendOption: Equatable {
         .whisperSmall, .whisperMedium, .whisperLargeTurbo,
     ]
 
-    static let experimental: [BackendOption] = [
-        .qwen3Asr, .canaryQwen, .nemotronStreaming,
-    ]
-
-    /// Models available for download and use.
-    static let all: [BackendOption] = parakeetFamily + [.cohereTranscribe] + whisperFamily + experimental
-    
-
     static let qwen3Asr = BackendOption(
         backend: "qwen",
         model: "FluidInference/qwen3-asr-0.6b-coreml",
@@ -108,6 +100,13 @@ struct BackendOption: Equatable {
         description: "Multilingual, 52 languages. Slower than Parakeet (~2-3s). First use takes ~30s to warm up.",
         recommended: false
     )
+
+    static let experimental: [BackendOption] = [
+        .qwen3Asr, .canaryQwen, .nemotronStreaming,
+    ]
+
+    /// Models available for download and use.
+    static let all: [BackendOption] = parakeetFamily + [.cohereTranscribe] + whisperFamily + experimental
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
@@ -333,7 +332,7 @@ struct CustomWord: Codable, Equatable, Identifiable {
         self.id = id
         self.word = word
         self.replacement = replacement
-        self.matchingThreshold = matchingThreshold
+        self.matchingThreshold = Self.clampedThreshold(matchingThreshold)
     }
 
     init(from decoder: Decoder) throws {
@@ -341,7 +340,7 @@ struct CustomWord: Codable, Equatable, Identifiable {
         id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
         word = try c.decode(String.self, forKey: .word)
         replacement = try c.decodeIfPresent(String.self, forKey: .replacement)
-        matchingThreshold = try c.decodeIfPresent(Double.self, forKey: .matchingThreshold) ?? 0.85
+        matchingThreshold = Self.clampedThreshold(try c.decodeIfPresent(Double.self, forKey: .matchingThreshold) ?? 0.85)
     }
 
     var displayLabel: String {
@@ -353,6 +352,10 @@ struct CustomWord: Codable, Equatable, Identifiable {
 
     var targetWord: String {
         replacement ?? word
+    }
+
+    private static func clampedThreshold(_ value: Double) -> Double {
+        min(max(value, 0.70), 0.95)
     }
 }
 

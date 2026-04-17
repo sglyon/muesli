@@ -60,9 +60,10 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.whisperSmall))
         #expect(BackendOption.all.contains(.whisperMedium))
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
+        #expect(BackendOption.all.contains(.qwen3Asr))
         #expect(BackendOption.all.contains(.canaryQwen))
         #expect(BackendOption.all.contains(.cohereTranscribe))
-        #expect(BackendOption.all.count == 9)
+        #expect(BackendOption.all.contains(.nemotronStreaming))
     }
 
     @Test("Cohere uses cohere backend")
@@ -367,6 +368,28 @@ struct AppConfigTests {
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
         #expect(config.customWords.count == 1)
         #expect(config.customWords[0].matchingThreshold == 0.85)
+    }
+
+    @Test("custom words clamp thresholds into the supported UI range")
+    func customWordsClampThresholdsIntoSupportedRange() throws {
+        let json = """
+        {
+          "custom_words": [
+            {
+              "word": "aggressive",
+              "matching_threshold": 0.1
+            },
+            {
+              "word": "strict",
+              "matching_threshold": 1.4
+            }
+          ]
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(config.customWords.count == 2)
+        #expect(config.customWords[0].matchingThreshold == 0.70)
+        #expect(config.customWords[1].matchingThreshold == 0.95)
     }
 
     @Test("custom templates decode missing icon with fallback")

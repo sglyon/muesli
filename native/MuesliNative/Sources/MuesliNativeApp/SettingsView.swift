@@ -167,6 +167,9 @@ struct SettingsView: View {
         ("1e1e2e", "Dark"),
     ]
 
+    private let sharedContextDescription =
+        "Uses nearby app text for dictation cleanup and meeting summaries, plus OCR context for meetings when available. All processing stays on-device."
+
     private var settingsPanePicker: some View {
         HStack {
             Spacer()
@@ -279,7 +282,7 @@ struct SettingsView: View {
                         controller.updateConfig { $0.enableScreenContext = newValue }
                     }
                 }
-                Text("Uses nearby app text for dictation cleanup and also feeds meeting summaries. All processing stays on-device.")
+                Text(sharedContextDescription)
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .padding(.horizontal, MuesliTheme.spacing16)
@@ -306,7 +309,7 @@ struct SettingsView: View {
                         controller.updateConfig { $0.enableScreenContext = newValue }
                     }
                 }
-                Text("Reads app name, nearby text, and OCR context when available to enrich meeting summaries. This shared setting also assists dictation cleanup.")
+                Text(sharedContextDescription)
                     .font(MuesliTheme.caption())
                     .foregroundStyle(MuesliTheme.textTertiary)
                     .padding(.horizontal, MuesliTheme.spacing16)
@@ -433,7 +436,7 @@ struct SettingsView: View {
                 settingsRow("Indicator position") {
                     settingsMenu(
                         selection: appState.config.indicatorAnchor.label,
-                        options: IndicatorAnchor.allCases.map(\.label)
+                        options: IndicatorAnchor.allCases.filter { $0 != .custom }.map(\.label)
                     ) { label in
                         guard let anchor = IndicatorAnchor.allCases.first(where: { $0.label == label }) else { return }
                         controller.updateConfig { $0.indicatorAnchor = anchor }

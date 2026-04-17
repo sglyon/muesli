@@ -193,7 +193,7 @@ private struct DictionaryWordEditorRow: View {
     private var hasChanges: Bool {
         trimmedWord != word.word
             || (trimmedReplacement.isEmpty ? nil : trimmedReplacement) != word.replacement
-            || abs(draftThreshold - word.matchingThreshold) > 0.000_1
+            || abs(draftThreshold - word.matchingThreshold) > 0.001
     }
 
     var body: some View {

@@ -165,10 +165,6 @@ final class FloatingIndicatorController {
     func savePosition() {
         guard let frame = panel?.frame else { return }
         let center = CGPoint(x: frame.midX, y: frame.midY)
-        var config = configStore.load()
-        config.indicatorAnchor = .custom
-        config.indicatorOrigin = CGPointCodable(x: center.x, y: center.y)
-        configStore.save(config)
         onPositionSaved?(center)
     }
 
