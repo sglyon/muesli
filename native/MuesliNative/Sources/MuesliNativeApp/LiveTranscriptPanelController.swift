@@ -38,7 +38,6 @@ final class LiveTranscriptPanelController {
             let client = LiveCoachClient(sidecar: sidecar)
             let engine = LiveCoachEngine(
                 client: client,
-                session: session,
                 settings: config.liveCoach,
                 config: config,
                 resourceId: "user-muesli",
@@ -181,6 +180,15 @@ final class LiveTranscriptPanelController {
         }
         viewModel.entries = entries
 
-        coachEngine?.onTranscriptTick()
+        if let engine = coachEngine {
+            let snapshot = CoachTranscriptSnapshot(
+                mic: micSegs,
+                system: sysSegs,
+                diarization: diarSegs,
+                labelMap: labelMap,
+                meetingStart: meetingStart
+            )
+            engine.onTranscriptTick(snapshot: snapshot)
+        }
     }
 }

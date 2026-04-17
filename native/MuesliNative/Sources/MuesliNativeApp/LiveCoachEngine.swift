@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import FluidAudio
 import MuesliCore
 
 // MARK: - View model
@@ -80,6 +81,19 @@ enum CoachXML {
     }
 }
 
+// MARK: - Snapshot
+
+/// Per-tick snapshot of the meeting transcript so the engine can be tested
+/// without a real `MeetingSession`. The panel controller produces these from
+/// `MeetingSession.allSegments()` plus `meetingStart`.
+struct CoachTranscriptSnapshot {
+    var mic: [SpeechSegment]
+    var system: [SpeechSegment]
+    var diarization: [TimedSpeakerSegment]
+    var labelMap: [String: String]
+    var meetingStart: Date
+}
+
 // MARK: - Engine
 
 /// Orchestrates coach turns: watches the meeting transcript, debounces proactive
@@ -89,8 +103,7 @@ enum CoachXML {
 final class LiveCoachEngine {
     let viewModel = LiveCoachViewModel()
 
-    private let client: LiveCoachClient
-    private weak var session: MeetingSession?
+    private let client: any CoachClientProtocol
     private var settings: LiveCoachSettings
     private let config: AppConfig
     private let resourceId: String
@@ -101,20 +114,21 @@ final class LiveCoachEngine {
     private var lastSystemOffset: Int = 0
     private var lastTurnAtSeconds: Double = 0
     private var pendingDeltaChars: Int = 0
+    /// Most recent snapshot received from the panel — used by `sendUserMessage`
+    /// to attach a fresh transcript delta to a manual question.
+    private var latestSnapshot: CoachTranscriptSnapshot?
 
     // In-flight turn guard
     private var inFlight: Bool = false
 
     init(
-        client: LiveCoachClient,
-        session: MeetingSession,
+        client: any CoachClientProtocol,
         settings: LiveCoachSettings,
         config: AppConfig,
         resourceId: String,
         threadId: String
     ) {
         self.client = client
-        self.session = session
         self.settings = settings
         self.config = config
         self.resourceId = resourceId
@@ -122,6 +136,7 @@ final class LiveCoachEngine {
     }
 
     var preserveThreadPreference: Bool { settings.preserveThreadAcrossMeetings }
+    var isInFlight: Bool { inFlight }
 
     // MARK: - Public API
 
@@ -160,12 +175,12 @@ final class LiveCoachEngine {
 
     /// Called every transcript poll from the panel. Computes any new transcript
     /// delta and fires a proactive turn if thresholds are met.
-    func onTranscriptTick() {
+    func onTranscriptTick(snapshot: CoachTranscriptSnapshot) {
+        latestSnapshot = snapshot
         guard settings.enabled, settings.proactiveEnabled, !inFlight else { return }
-        guard let session else { return }
         guard credentialsPresent(for: settings.provider) else { return }
 
-        let (delta, newMicOffset, newSystemOffset, untilSeconds) = extractDelta(from: session)
+        let (delta, newMicOffset, newSystemOffset, untilSeconds) = extractDelta(from: snapshot)
         if delta.isEmpty {
             return
         }
@@ -190,7 +205,6 @@ final class LiveCoachEngine {
     /// Called when the user types a question in the chat input.
     func sendUserMessage(_ text: String) {
         guard settings.enabled, !inFlight else { return }
-        guard let session else { return }
         guard credentialsPresent(for: settings.provider) else {
             viewModel.errorText = "Live coach is not configured — check Settings."
             return
@@ -200,7 +214,10 @@ final class LiveCoachEngine {
 
         // Include any fresh transcript delta in the same user turn so the
         // coach has up-to-the-moment context.
-        let (delta, newMicOffset, newSystemOffset, untilSeconds) = extractDelta(from: session)
+        let snapshot = latestSnapshot ?? CoachTranscriptSnapshot(
+            mic: [], system: [], diarization: [], labelMap: [:], meetingStart: Date()
+        )
+        let (delta, newMicOffset, newSystemOffset, untilSeconds) = extractDelta(from: snapshot)
         let since = lastTurnAtSeconds
         lastMicOffset = newMicOffset
         lastSystemOffset = newSystemOffset
@@ -317,10 +334,7 @@ final class LiveCoachEngine {
 
     // MARK: - Transcript delta
 
-    private func extractDelta(from session: MeetingSession) -> (text: String, newMicOffset: Int, newSystemOffset: Int, until: Double) {
-        let meetingStart = session.startTime ?? Date()
-        let snapshot = session.allSegments()
-
+    private func extractDelta(from snapshot: CoachTranscriptSnapshot) -> (text: String, newMicOffset: Int, newSystemOffset: Int, until: Double) {
         let micSegs = Array(snapshot.mic.dropFirst(lastMicOffset))
         let sysSegs = Array(snapshot.system.dropFirst(lastSystemOffset))
         let newMicOffset = lastMicOffset + micSegs.count
@@ -339,7 +353,7 @@ final class LiveCoachEngine {
             systemSegments: sysSegs,
             diarizationSegments: snapshot.diarization.isEmpty ? nil : snapshot.diarization,
             speakerLabelMap: snapshot.labelMap.isEmpty ? nil : snapshot.labelMap,
-            meetingStart: meetingStart
+            meetingStart: snapshot.meetingStart
         )
         return (formatted, newMicOffset, newSystemOffset, until)
     }

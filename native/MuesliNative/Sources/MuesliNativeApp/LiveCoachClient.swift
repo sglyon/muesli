@@ -68,9 +68,20 @@ enum LiveCoachClientError: LocalizedError {
     }
 }
 
+/// Abstraction over the sidecar HTTP client so `LiveCoachEngine` can be
+/// exercised in tests with a mock implementation that records requests and
+/// emits scripted SSE events.
+@MainActor
+protocol CoachClientProtocol {
+    func fetchThread(id: String) async throws -> ThreadHistoryResponse
+    func deleteThread(id: String) async throws
+    func deleteResource(id: String) async throws
+    func streamTurn(_ request: CoachTurnRequest) -> AsyncThrowingStream<CoachStreamEvent, Error>
+}
+
 /// Thin HTTP/SSE client that talks to the local muesli-agent sidecar.
 @MainActor
-final class LiveCoachClient {
+final class LiveCoachClient: CoachClientProtocol {
     private let sidecar: LiveCoachSidecar
     private let session: URLSession
     private let encoder: JSONEncoder
