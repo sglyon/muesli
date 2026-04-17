@@ -100,6 +100,12 @@ if [[ -d "$SIDECAR_DIR" ]] && command -v bun >/dev/null 2>&1; then
   fi
   cp "$SIDECAR_DIR/dist/muesli-agent" "$STAGED_APP_DIR/Contents/Resources/muesli-agent"
   chmod +x "$STAGED_APP_DIR/Contents/Resources/muesli-agent"
+  # The libsql native addon is loaded at runtime via process.dlopen from
+  # `<execDir>/native_modules/@libsql/<target>/index.node`. Bun's --compile
+  # flow can't embed .node files, so we ship them next to the binary.
+  if [[ -d "$SIDECAR_DIR/dist/native_modules" ]]; then
+    ditto "$SIDECAR_DIR/dist/native_modules" "$STAGED_APP_DIR/Contents/Resources/native_modules"
+  fi
 else
   echo "Skipping muesli-agent sidecar (bun not found or sidecar source missing)"
 fi
@@ -161,6 +167,34 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
     echo "Signing identity not found: $SIGN_IDENTITY" >&2
     exit 1
   fi
+fi
+
+# Sidecar MUST be codesigned with the JIT entitlement even in dev, otherwise
+# hardened-runtime macOS kills it with "Ran out of executable memory". Do this
+# unconditionally (ad-hoc signature if SKIP_SIGN is on).
+AGENT_ENTITLEMENTS="$ROOT/scripts/MuesliAgent.entitlements"
+if [[ -f "$APP_DIR/Contents/Resources/muesli-agent" ]]; then
+  AGENT_SIGN_IDENTITY="$SIGN_IDENTITY"
+  if [[ "$SKIP_SIGN" == "1" ]]; then
+    AGENT_SIGN_IDENTITY="-"  # ad-hoc signature
+  fi
+  codesign --force --options runtime --timestamp \
+    --entitlements "$AGENT_ENTITLEMENTS" \
+    --sign "$AGENT_SIGN_IDENTITY" \
+    "$APP_DIR/Contents/Resources/muesli-agent" 2>/dev/null \
+    || codesign --force \
+        --entitlements "$AGENT_ENTITLEMENTS" \
+        --sign "$AGENT_SIGN_IDENTITY" \
+        "$APP_DIR/Contents/Resources/muesli-agent"
+  # libsql native addon — ad-hoc sign if we're skipping Developer ID.
+  if [[ -d "$APP_DIR/Contents/Resources/native_modules" ]]; then
+    find "$APP_DIR/Contents/Resources/native_modules" -name "*.node" | while read -r addon; do
+      codesign --force --sign "$AGENT_SIGN_IDENTITY" "$addon" 2>/dev/null || true
+    done
+  fi
+fi
+
+if [[ "$SKIP_SIGN" != "1" ]]; then
 
   # Sign all nested binaries inside Sparkle framework (required for notarization)
   if [[ -d "$APP_DIR/Contents/MacOS/Sparkle.framework" ]]; then
@@ -191,13 +225,8 @@ if [[ "$SKIP_SIGN" != "1" ]]; then
   codesign --force --options runtime --timestamp \
     --sign "$SIGN_IDENTITY" \
     "$APP_DIR/Contents/MacOS/muesli-cli"
-
-  # Sign the Live Coach sidecar if it was bundled.
-  if [[ -f "$APP_DIR/Contents/Resources/muesli-agent" ]]; then
-    codesign --force --options runtime --timestamp \
-      --sign "$SIGN_IDENTITY" \
-      "$APP_DIR/Contents/Resources/muesli-agent"
-  fi
+  # muesli-agent + libsql addon were already signed above with the JIT
+  # entitlement — no further action needed here.
 
   # Sign the app bundle with hardened runtime, secure timestamp, and entitlements
   ENTITLEMENTS="$ROOT/scripts/Muesli.entitlements"

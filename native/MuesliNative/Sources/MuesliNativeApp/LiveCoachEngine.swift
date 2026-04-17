@@ -251,10 +251,6 @@ final class LiveCoachEngine {
     private func runTurn(content: String, kind: CoachTurnRequest.Turn.Kind, displayUser: String?) async {
         inFlight = true
         viewModel.isStreaming = true
-        defer {
-            inFlight = false
-            viewModel.isStreaming = false
-        }
 
         if let displayUser {
             viewModel.messages.append(CoachMessage(kind: .userChat, text: displayUser))
@@ -265,16 +261,21 @@ final class LiveCoachEngine {
         viewModel.messages.append(CoachMessage(kind: replyKind, text: "", isStreaming: true))
         let streamingIndex = viewModel.messages.count - 1
 
+        var receivedAnyDelta = false
+        var sawDone = false
+
         let request = await buildRequest(content: content, kind: kind)
 
         do {
             for try await event in client.streamTurn(request) {
                 switch event {
                 case .delta(let chunk):
+                    receivedAnyDelta = true
                     viewModel.messages[streamingIndex].text += chunk
                 case .usage:
                     break
                 case .done:
+                    sawDone = true
                     viewModel.messages[streamingIndex].isStreaming = false
                 case .error(let message):
                     viewModel.errorText = message
@@ -289,6 +290,27 @@ final class LiveCoachEngine {
                 viewModel.messages[streamingIndex].text = "[error: \(error.localizedDescription)]"
             }
         }
+
+        // Defensive cleanup: ensure the streaming cursor clears even when the
+        // sidecar's SSE stream ended without firing an explicit `done` event.
+        if viewModel.messages[streamingIndex].isStreaming {
+            viewModel.messages[streamingIndex].isStreaming = false
+        }
+
+        // Empty text despite a clean close means Mastra's textStream produced
+        // no text content — usually because the model's only output was a
+        // working-memory tool call. Make the bubble self-explanatory instead
+        // of leaving it blank so the user knows what happened.
+        if receivedAnyDelta == false && viewModel.messages[streamingIndex].text.isEmpty {
+            let reason = sawDone
+                ? "(no response — the model returned only a working-memory update; next chunk will have fresh context)"
+                : "(stream ended unexpectedly with no content)"
+            viewModel.messages[streamingIndex].kind = .systemNotice
+            viewModel.messages[streamingIndex].text = reason
+        }
+
+        inFlight = false
+        viewModel.isStreaming = false
     }
 
     private func buildRequest(content: String, kind: CoachTurnRequest.Turn.Kind) async -> CoachTurnRequest {

@@ -10,7 +10,7 @@ struct CoachProfileMigrationTests {
         return try JSONDecoder().decode(LiveCoachSettings.self, from: data)
     }
 
-    @Test("legacy config (flat fields, no profiles array) migrates to a single Sales Coach profile")
+    @Test("legacy config (flat fields) migrates Sales Coach with user's tweaks and auto-seeds other bundled defaults")
     func legacyMigration() throws {
         let legacy = """
         {
@@ -35,17 +35,22 @@ struct CoachProfileMigrationTests {
         #expect(settings.enableSemanticRecall == false)
         #expect(settings.preserveThreadAcrossMeetings == false)
 
-        // Exactly one profile, named Sales Coach, carrying the legacy fields.
-        #expect(settings.profiles.count == 1)
-        let p = settings.profiles[0]
-        #expect(p.name == "Sales Coach")
-        #expect(p.id == CoachProfile.salesCoachID)
-        #expect(p.provider == "openai")
-        #expect(p.systemPrompt == "Custom legacy prompt the user had tweaked")
-        #expect(p.agentInstructions == "extra instructions here")
-        #expect(p.proactiveEnabled == false)
-        #expect(p.minCharsBeforeTrigger == 350)
-        #expect(settings.activeProfileID == p.id)
+        // All bundled defaults present; the migrated Sales Coach carries the
+        // user's legacy prompt + provider choice, others are freshly seeded.
+        #expect(settings.profiles.count == CoachProfile.defaults.count)
+        let sales = settings.profiles.first { $0.id == CoachProfile.salesCoachID }!
+        #expect(sales.name == "Sales Coach")
+        #expect(sales.provider == "openai")
+        #expect(sales.systemPrompt == "Custom legacy prompt the user had tweaked")
+        #expect(sales.agentInstructions == "extra instructions here")
+        #expect(sales.proactiveEnabled == false)
+        #expect(sales.minCharsBeforeTrigger == 350)
+        #expect(settings.activeProfileID == sales.id)
+
+        // Newly-seeded defaults keep their bundled defaults (not the legacy
+        // provider). Sanity-check one.
+        let retro = settings.profiles.first { $0.id == CoachProfile.retrospectiveID }!
+        #expect(retro.provider == "anthropic")
     }
 
     @Test("modern config with profiles array round-trips and ignores legacy keys")
@@ -62,16 +67,92 @@ struct CoachProfileMigrationTests {
         #expect(decoded == original)
     }
 
-    @Test("fresh init seeds three default profiles and Sales Coach is the active default")
+    @Test("fresh init seeds all bundled default profiles and Sales Coach is the active default")
     func freshDefaults() {
         let settings = LiveCoachSettings()
-        #expect(settings.profiles.count == 3)
-        #expect(settings.profiles.map(\.name) == [
-            "Sales Coach",
-            "Team Meeting Facilitator",
-            "Executive Briefing",
-        ])
+        let names = settings.profiles.map(\.name)
+        #expect(names.contains("Sales Coach"))
+        #expect(names.contains("Team Meeting Facilitator"))
+        #expect(names.contains("Executive Briefing"))
+        #expect(names.contains("Retrospective Coach"))
+        #expect(names.contains("1:1 Coach"))
+        #expect(settings.profiles.count == CoachProfile.defaults.count)
         #expect(settings.activeProfile.name == "Sales Coach")
+    }
+
+    @Test("legacy-migrated config picks up bundled default profiles on next load")
+    func legacyGetsNewDefaults() throws {
+        // Simulate a migrated user: legacy flat fields, no profiles array yet.
+        let legacy = """
+        {
+          "enabled": true,
+          "system_prompt": "Pre-profiles sales prompt"
+        }
+        """
+        let settings = try decode(legacy)
+        // Should have Sales Coach (migrated from legacy) plus all OTHER
+        // bundled defaults auto-seeded.
+        #expect(settings.profiles.count == CoachProfile.defaults.count)
+        let names = settings.profiles.map(\.name)
+        #expect(names.contains("Sales Coach"))
+        #expect(names.contains("Team Meeting Facilitator"))
+        #expect(names.contains("Retrospective Coach"))
+        #expect(names.contains("1:1 Coach"))
+        // Migrated Sales Coach keeps the user's legacy prompt.
+        let sales = settings.profiles.first { $0.name == "Sales Coach" }!
+        #expect(sales.systemPrompt == "Pre-profiles sales prompt")
+    }
+
+    @Test("deleted defaults stay deleted after reload")
+    func deletedDefaultsStayDeleted() throws {
+        // User on a previous version saw three defaults, then deleted the
+        // Executive Briefing. Config now has 2 profiles and the
+        // seeded_default_ids set contains all 3 old defaults.
+        let partial = """
+        {
+          "enabled": true,
+          "seeded_default_ids": [
+            "\(CoachProfile.salesCoachID.uuidString)",
+            "\(CoachProfile.teamMeetingID.uuidString)",
+            "\(CoachProfile.executiveBriefingID.uuidString)"
+          ],
+          "profiles": [
+            {
+              "id": "\(CoachProfile.salesCoachID.uuidString)",
+              "name": "Sales Coach",
+              "provider": "anthropic",
+              "anthropic_model": "claude-sonnet-4-6",
+              "openai_model": "gpt-5.4-mini",
+              "chatgpt_model": "gpt-5.4-mini",
+              "system_prompt": "sales",
+              "agent_instructions": "",
+              "working_memory_template": "",
+              "proactive_enabled": true,
+              "min_chars_before_trigger": 200
+            },
+            {
+              "id": "\(CoachProfile.teamMeetingID.uuidString)",
+              "name": "Team Meeting Facilitator",
+              "provider": "anthropic",
+              "anthropic_model": "claude-sonnet-4-6",
+              "openai_model": "gpt-5.4-mini",
+              "chatgpt_model": "gpt-5.4-mini",
+              "system_prompt": "team",
+              "agent_instructions": "",
+              "working_memory_template": "",
+              "proactive_enabled": true,
+              "min_chars_before_trigger": 200
+            }
+          ]
+        }
+        """
+        let settings = try decode(partial)
+        let names = settings.profiles.map(\.name)
+        // Deleted Executive Briefing must not come back.
+        #expect(!names.contains("Executive Briefing"))
+        // But NEW bundled defaults (that weren't in seeded_default_ids) do seed in.
+        #expect(names.contains("Retrospective Coach"))
+        #expect(names.contains("1:1 Coach"))
     }
 
     @Test("activeProfile falls back gracefully when activeProfileID points at a deleted profile")

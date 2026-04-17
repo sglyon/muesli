@@ -20,6 +20,9 @@ final class LiveTranscriptPanelController {
     /// default in settings, so swapping profiles mid-meeting doesn't change
     /// the user's preferred default for new meetings.
     private var sessionActiveProfileID: UUID?
+    /// Placeholder view-model shown while the sidecar finishes its handshake.
+    /// Once `coachEngine` exists, its own viewModel takes over.
+    private var pendingCoachViewModel: LiveCoachViewModel?
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -40,9 +43,23 @@ final class LiveTranscriptPanelController {
         currentThreadId = "meeting-\(meetingID)"
         currentConfig = config
         sessionActiveProfileID = config.liveCoach.activeProfileID
+        pendingCoachViewModel = nil
 
-        if config.liveCoach.enabled, coachSidecar?.isRunning == true {
-            instantiateCoachEngine(profile: config.liveCoach.activeProfile)
+        if config.liveCoach.enabled {
+            if let sidecar = coachSidecar, sidecar.isReady {
+                instantiateCoachEngine(profile: config.liveCoach.activeProfile)
+            } else {
+                // Show the coach column immediately with a "starting..." state so
+                // the user knows the column exists; instantiate the real engine
+                // once the sidecar finishes its handshake.
+                let placeholder = LiveCoachViewModel()
+                placeholder.placeholderMessage = coachSidecar == nil
+                    ? "Live Coach binary missing — see logs."
+                    : "Coach starting…"
+                pendingCoachViewModel = placeholder
+                self.coachEngine = nil
+                Task { [weak self] in await self?.upgradeToLiveEngineWhenReady() }
+            }
         } else {
             self.coachEngine = nil
         }
@@ -94,6 +111,7 @@ final class LiveTranscriptPanelController {
             threadId: threadId
         )
         self.coachEngine = engine
+        self.pendingCoachViewModel = nil
         sessionActiveProfileID = profile.id
         Task { await engine.bootstrap() }
     }
@@ -108,28 +126,42 @@ final class LiveTranscriptPanelController {
         instantiateCoachEngine(profile: next)
     }
 
+    /// Polls the sidecar's handshake state, and when ready swaps the
+    /// placeholder out for a real engine + refreshes the panel.
+    private func upgradeToLiveEngineWhenReady() async {
+        guard let sidecar = coachSidecar, let config = currentConfig else { return }
+        let ready = await sidecar.waitUntilReady(timeout: 30.0)
+        guard ready else {
+            pendingCoachViewModel?.placeholderMessage =
+                "Coach unavailable — sidecar didn't start. Check Console for [live-coach] errors."
+            return
+        }
+        // Race guard: panel may have been closed while we were waiting.
+        guard panel?.isVisible == true, currentConfig != nil else { return }
+        instantiateCoachEngine(profile: config.liveCoach.activeProfile)
+        refreshPanelContent()
+    }
+
     private func refreshPanelContent() {
         guard let panel else { return }
-        let rootView = LiveTranscriptView(
-            viewModel: viewModel,
-            coachViewModel: coachEngine?.viewModel,
-            availableProfiles: currentConfig?.liveCoach.profiles ?? [],
-            activeProfileID: sessionActiveProfileID,
-            onClose: { [weak self] in self?.hide() },
-            onSendCoachMessage: { [weak self] text in self?.coachEngine?.sendUserMessage(text) },
-            onSelectProfile: { [weak self] id in
-                self?.switchToProfile(id: id)
-                self?.refreshPanelContent()
-            }
-        )
-        panel.contentView = NSHostingView(rootView: rootView)
+        panel.contentView = NSHostingView(rootView: makeRootView())
     }
 
     // MARK: - Panel construction
 
+    /// True when the panel should render the coach column (either a live
+    /// engine or a placeholder waiting for the sidecar handshake).
+    private var hasCoachColumn: Bool {
+        coachEngine != nil || pendingCoachViewModel != nil
+    }
+
+    private func currentCoachViewModel() -> LiveCoachViewModel? {
+        coachEngine?.viewModel ?? pendingCoachViewModel
+    }
+
     private func buildPanel() {
         let screen = NSScreen.main ?? NSScreen.screens.first!
-        let hasCoach = coachEngine != nil
+        let hasCoach = hasCoachColumn
         let panelWidth: CGFloat = hasCoach ? 900 : 380
         let panelHeight: CGFloat = hasCoach ? 600 : 500
         let margin: CGFloat = 20
@@ -153,22 +185,24 @@ final class LiveTranscriptPanelController {
         panel.backgroundColor = NSColor(red: 0.086, green: 0.090, blue: 0.098, alpha: 0.95)
         panel.minSize = NSSize(width: hasCoach ? 640 : 280, height: hasCoach ? 420 : 200)
 
-        let rootView = LiveTranscriptView(
+        panel.contentView = NSHostingView(rootView: makeRootView())
+
+        self.panel = panel
+    }
+
+    private func makeRootView() -> LiveTranscriptView {
+        LiveTranscriptView(
             viewModel: viewModel,
-            coachViewModel: coachEngine?.viewModel,
+            coachViewModel: currentCoachViewModel(),
             availableProfiles: currentConfig?.liveCoach.profiles ?? [],
             activeProfileID: sessionActiveProfileID,
             onClose: { [weak self] in self?.hide() },
             onSendCoachMessage: { [weak self] text in self?.coachEngine?.sendUserMessage(text) },
             onSelectProfile: { [weak self] id in
                 self?.switchToProfile(id: id)
-                // Rebuild the host view so the picker reflects the new active id.
                 self?.refreshPanelContent()
             }
         )
-        panel.contentView = NSHostingView(rootView: rootView)
-
-        self.panel = panel
     }
 
     // MARK: - Polling

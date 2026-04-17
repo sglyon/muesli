@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bun needs JIT to run compiled JavaScript. Without these entitlements
+         the hardened runtime kills the child with "Ran out of executable
+         memory while allocating N bytes." -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Bun loads the libsql native addon via process.dlopen on a path that
+         isn't signed by us (ships as-is from npm) — this entitlement lets
+         the hardened runtime accept it. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

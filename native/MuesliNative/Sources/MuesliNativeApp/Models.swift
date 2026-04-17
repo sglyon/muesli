@@ -286,6 +286,8 @@ struct CoachProfile: Codable, Equatable, Identifiable {
     static let salesCoachID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
     static let teamMeetingID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
     static let executiveBriefingID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+    static let retrospectiveID = UUID(uuidString: "44444444-4444-4444-4444-444444444444")!
+    static let oneOnOneID = UUID(uuidString: "55555555-5555-5555-5555-555555555555")!
 
     static let salesCoachPrompt = """
     You are a real-time sales coach for Spencer Lyon at Arete Intelligence (data engineering, data science, and AI transformation for mid-market companies). You observe a live meeting transcript. When you receive a <transcript_update>, provide 1-3 short, actionable coaching tips — tone, questions to ask next, objections to anticipate, or discovery threads to pull on. When you receive a <user_message>, answer directly. Keep replies tight (under 120 words unless asked).
@@ -297,6 +299,14 @@ struct CoachProfile: Codable, Equatable, Identifiable {
 
     static let executiveBriefingPrompt = """
     You are a real-time coach for Spencer Lyon presenting to senior leadership at his firm. Watch for: jargon that needs translating, claims that lack a number, leadership concerns being avoided, and openings to connect the work back to firm-level priorities. When you receive a <transcript_update>, give 1-3 short tips on framing, what to anticipate, or which thread to pull. When you receive a <user_message>, answer it directly. Plain text, under 120 words unless asked.
+    """
+
+    static let retrospectivePrompt = """
+    You are a real-time coach for a team retrospective. Your job: keep the conversation productive, specific, and blame-free. Watch for: vague complaints that need concrete examples, root causes being skipped in favor of symptoms, "we should do X" declarations that nobody owns, silence where junior voices should be heard, and patterns that recur from previous retros. When you receive a <transcript_update>, give 1-3 short observations or suggested interventions the facilitator could use. When you receive a <user_message>, answer directly. Plain text, under 120 words unless asked.
+    """
+
+    static let oneOnOnePrompt = """
+    You are a real-time coach for a manager running a 1:1. Your job: help the manager listen better, notice what's unsaid, and surface issues early. Watch for: the report raising a concern that gets brushed past, the manager filling silence instead of letting the report talk, follow-ups from prior 1:1s that should be revisited, signals of burnout or disengagement, and growth conversations being deferred. When you receive a <transcript_update>, offer 1-3 short nudges — a question to ask, a thread to slow down on, or something to explicitly acknowledge. When you receive a <user_message>, answer directly. Plain text, under 120 words unless asked.
     """
 
     static let salesWorkingMemory = """
@@ -354,6 +364,43 @@ struct CoachProfile: Codable, Equatable, Identifiable {
     - [Topic] — [pushback received] — [follow-up still owed]
     """
 
+    static let retrospectiveWorkingMemory = """
+    # Retrospective Patterns
+
+    ## Recurring Themes (seen across multiple retros)
+    - [Theme] — [first noticed] — [status / still open]
+
+    ## Systemic Issues vs. Incidents
+    - Systemic:
+    - One-off:
+
+    ## Action Items From Prior Retros
+    - [Item] — [owner] — [status]
+
+    ## Team Sentiment Signals
+    - Energy / morale observations:
+    - Voices commonly unheard:
+    """
+
+    static let oneOnOneWorkingMemory = """
+    # 1:1 Running Notes
+
+    ## About the Report
+    - Name / role:
+    - Current priorities:
+    - Development goals:
+
+    ## Open Follow-Ups (most-recent-first)
+    - [Topic] — [promised on date] — [status]
+
+    ## Concerns Raised
+    - [Concern] — [date] — [how it was handled]
+
+    ## Manager Reminders
+    - Things to explicitly acknowledge next time:
+    - Patterns to watch for (e.g., burnout signals, growth stalls):
+    """
+
     static let defaults: [CoachProfile] = [
         CoachProfile(
             id: salesCoachID,
@@ -373,6 +420,18 @@ struct CoachProfile: Codable, Equatable, Identifiable {
             systemPrompt: executiveBriefingPrompt,
             workingMemoryTemplate: executiveBriefingWorkingMemory
         ),
+        CoachProfile(
+            id: retrospectiveID,
+            name: "Retrospective Coach",
+            systemPrompt: retrospectivePrompt,
+            workingMemoryTemplate: retrospectiveWorkingMemory
+        ),
+        CoachProfile(
+            id: oneOnOneID,
+            name: "1:1 Coach",
+            systemPrompt: oneOnOnePrompt,
+            workingMemoryTemplate: oneOnOneWorkingMemory
+        ),
     ]
 }
 
@@ -385,6 +444,10 @@ struct LiveCoachSettings: Codable, Equatable {
     /// The profile selected by default when a meeting starts. The panel can
     /// still swap profile mid-meeting without changing this value.
     var activeProfileID: UUID = CoachProfile.salesCoachID
+    /// IDs of bundled default profiles the user has been offered. Lets new
+    /// defaults auto-seed on upgrade without re-adding ones the user has
+    /// explicitly deleted.
+    var seededDefaultIDs: Set<UUID> = Set(CoachProfile.defaults.map(\.id))
 
     /// Looks up the active profile, falling back to the first available or a
     /// freshly-built Sales Coach if profiles is somehow empty.
@@ -407,6 +470,7 @@ struct LiveCoachSettings: Codable, Equatable {
         case preserveThreadAcrossMeetings = "preserve_thread_across_meetings"
         case profiles
         case activeProfileID = "active_profile_id"
+        case seededDefaultIDs = "seeded_default_ids"
 
         // Legacy keys retained so we can migrate older configs that pre-date
         // profiles. Not encoded back out — only read in init(from:).
@@ -433,6 +497,7 @@ struct LiveCoachSettings: Codable, Equatable {
         if let decodedProfiles = try? c.decode([CoachProfile].self, forKey: .profiles), !decodedProfiles.isEmpty {
             profiles = decodedProfiles
             activeProfileID = (try? c.decode(UUID.self, forKey: .activeProfileID)) ?? decodedProfiles[0].id
+            seededDefaultIDs = (try? c.decode(Set<UUID>.self, forKey: .seededDefaultIDs)) ?? []
         } else {
             // Migration: build a single profile from the legacy flat fields.
             let legacyPrompt = (try? c.decode(String.self, forKey: .legacySystemPrompt))
@@ -452,6 +517,22 @@ struct LiveCoachSettings: Codable, Equatable {
             )
             profiles = [migrated]
             activeProfileID = migrated.id
+            // Migrated users only had Sales Coach on disk — they've never seen
+            // any of the newer bundled personas. Leave seededDefaultIDs empty
+            // so the auto-seed pass below fills them in.
+            seededDefaultIDs = []
+        }
+
+        // Auto-seed any bundled default profile the user hasn't been offered
+        // yet. Deleted defaults stay deleted because their ID stays in
+        // seededDefaultIDs even after removal.
+        var currentIDs = Set(profiles.map(\.id))
+        for bundled in CoachProfile.defaults where !seededDefaultIDs.contains(bundled.id) {
+            if !currentIDs.contains(bundled.id) {
+                profiles.append(bundled)
+                currentIDs.insert(bundled.id)
+            }
+            seededDefaultIDs.insert(bundled.id)
         }
     }
 
@@ -463,6 +544,7 @@ struct LiveCoachSettings: Codable, Equatable {
         try c.encode(preserveThreadAcrossMeetings, forKey: .preserveThreadAcrossMeetings)
         try c.encode(profiles, forKey: .profiles)
         try c.encode(activeProfileID, forKey: .activeProfileID)
+        try c.encode(seededDefaultIDs, forKey: .seededDefaultIDs)
     }
 }
 

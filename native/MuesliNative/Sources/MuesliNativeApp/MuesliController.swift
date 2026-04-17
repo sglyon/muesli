@@ -77,6 +77,12 @@ final class MuesliController: NSObject {
             fputs("[muesli-native] startup error: \(error)\n", stderr)
         }
 
+        // Warm up the Live Coach sidecar at app launch so the panel doesn't
+        // race the handshake when the user opens it the first time.
+        if config.liveCoach.enabled {
+            launchCoachSidecarIfNeeded()
+        }
+
         // Clean up leftover audio temp files from previous sessions
         let tempAudioDir = FileManager.default.temporaryDirectory.appendingPathComponent("muesli-system-audio")
         if let files = try? FileManager.default.contentsOfDirectory(at: tempAudioDir, includingPropertiesForKeys: nil) {

@@ -159,6 +159,13 @@ final class LiveCoachClient: CoachClientProtocol {
         urlReq.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         urlReq.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        // Streaming coach turns can legitimately pause for 30+ seconds if the
+        // model is "thinking" or if Mastra is running a side-call (working
+        // memory update, title generation). Default URLSession request
+        // timeout (60s, treated as idle) kills those mid-stream and the user
+        // sees "[error: The request timed out.]". 300s is plenty of head-
+        // room; resource timeout stays at URLSession's default (7 days).
+        urlReq.timeoutInterval = 300
 
         let body: Data
         do { body = try encoder.encode(request) } catch { throw LiveCoachClientError.encodingFailed }

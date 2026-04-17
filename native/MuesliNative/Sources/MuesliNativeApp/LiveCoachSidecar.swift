@@ -50,14 +50,56 @@ final class LiveCoachSidecar {
         process?.isRunning ?? false
     }
 
+    /// True only when the handshake has fully completed and the client can
+    /// reach the sidecar. `isRunning` flips earlier (the moment the OS spawns
+    /// the process) but http calls would 401 / fail until baseURL+token land.
+    var isReady: Bool {
+        baseURL != nil && bearerToken != nil
+    }
+
+    /// Tracks an in-flight launch so concurrent callers wait on the same
+    /// handshake instead of double-spawning.
+    private var launchTask: Task<Void, Error>?
+
     func launch() async throws {
-        guard !isRunning else { return }
+        if isReady { return }
+        if let existing = launchTask {
+            try await existing.value
+            return
+        }
+        let task = Task<Void, Error> { [weak self] in
+            try await self?.performLaunch()
+        }
+        launchTask = task
+        defer { launchTask = nil }
+        try await task.value
+    }
+
+    private func performLaunch() async throws {
         let handshake = try await spawnAndRead()
         self.baseURL = URL(string: "http://127.0.0.1:\(handshake.port)")
         self.bearerToken = handshake.token
         self.version = handshake.version
-        restartBackoffMs = 500  // reset on successful launch
+        restartBackoffMs = 500
         fputs("[live-coach] sidecar listening on \(self.baseURL?.absoluteString ?? "?") (v\(handshake.version))\n", stderr)
+    }
+
+    /// Waits up to `timeout` seconds for the sidecar to become ready. Returns
+    /// true if ready, false on timeout or launch failure. Safe to call when
+    /// already ready (returns true immediately) or when a launch is in flight
+    /// (awaits the existing task).
+    func waitUntilReady(timeout: TimeInterval = 5.0) async -> Bool {
+        if isReady { return true }
+        if let task = launchTask {
+            do { try await task.value } catch { return false }
+            return isReady
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isReady { return true }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return isReady
     }
 
     func shutdown() {
