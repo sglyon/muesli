@@ -453,6 +453,12 @@ final class MuesliController: NSObject {
         }
         Task { [weak self] in
             guard let self else { return }
+            let needsWarmup = option.backend == "whisper"
+            if needsWarmup {
+                await MainActor.run {
+                    self.indicator.showLoading("Warming up...")
+                }
+            }
             let ppOption = self.runtimePostProcessorOption()
             if #available(macOS 15, *) {
                 if let ppOption {
@@ -467,6 +473,9 @@ final class MuesliController: NSObject {
                 enablePostProcessor: self.config.enablePostProcessor && ppOption != nil
             )
             await MainActor.run {
+                if needsWarmup {
+                    self.indicator.hideLoading()
+                }
                 self.statusBarController?.refresh()
                 self.historyWindowController?.updateBackendLabel()
             }
