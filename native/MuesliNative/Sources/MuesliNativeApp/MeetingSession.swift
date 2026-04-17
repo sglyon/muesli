@@ -80,6 +80,8 @@ private enum MeetingTranscriptRecoveryResult {
 }
 
 final class MeetingSession {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
+
     private let title: String
     private let calendarEventID: String?
     private let backend: BackendOption
@@ -462,6 +464,8 @@ final class MeetingSession {
             customTemplates: config.customMeetingTemplates
         )
         let visualContext = await screenContextCollector.stopAndDrain()
+        Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
+        fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
         onProgress?(.summarizingNotes)
         let formattedNotes = await MeetingSummaryClient.summarize(
             transcript: rawTranscript,

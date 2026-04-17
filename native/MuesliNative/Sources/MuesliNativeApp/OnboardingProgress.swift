@@ -1,7 +1,7 @@
 import Foundation
 
 struct OnboardingProgress: Codable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int = currentSchemaVersion
     var currentStep: Int
@@ -10,6 +10,7 @@ struct OnboardingProgress: Codable {
     var selectedModelKey: String
     var hotkeyKeyCode: UInt16
     var hotkeyLabel: String
+    var systemAudioRequested: Bool = false
 
     private static var fileURL: URL {
         AppIdentity.supportDirectoryURL.appendingPathComponent("onboarding-progress.json")

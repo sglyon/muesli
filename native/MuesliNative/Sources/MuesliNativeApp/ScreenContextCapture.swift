@@ -251,6 +251,8 @@ actor MeetingScreenContextCollector {
         let timestamp: Date
         let appName: String
         let contextText: String
+        let ocrCharCount: Int
+        let appContextCharCount: Int
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -262,6 +264,11 @@ actor MeetingScreenContextCollector {
     private var snapshots: [Snapshot] = []
     private var captureTask: Task<Void, Never>?
 
+    private static func isMeaningfulAppContext(_ text: String, appName: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed != "App: \(appName)"
+    }
+
     /// Start periodic screen context capture.
     /// - Parameter useOCR: When `true`, uses screenshot + OCR (richer context).
     ///   Safe only when CoreAudio tap is active (no SCStream conflict).
@@ -270,23 +277,38 @@ actor MeetingScreenContextCollector {
         captureTask?.cancel()
         captureTask = Task {
             while !Task.isCancelled {
-                if useOCR, let screenCtx = await ScreenContextCapture.captureOnce() {
-                    snapshots.append(Snapshot(
-                        timestamp: screenCtx.capturedAt,
-                        appName: screenCtx.appName,
-                        contextText: String(screenCtx.ocrText.prefix(1000))
-                    ))
-                } else {
-                    let ctx = DictationContextCapture.capture()
-                    let text = DictationContextCapture.formatForPrompt(ctx)
-                    if !text.isEmpty {
-                        snapshots.append(Snapshot(
-                            timestamp: Date(),
-                            appName: ctx.appName,
-                            contextText: String(text.prefix(1000))
-                        ))
-                    }
+                let timestamp = Date()
+                let appContext = DictationContextCapture.capture()
+                let appContextText = DictationContextCapture.formatForPrompt(appContext)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let meaningfulAppContext = Self.isMeaningfulAppContext(appContextText, appName: appContext.appName)
+                    ? appContextText
+                    : ""
+
+                let screenContext = useOCR ? await ScreenContextCapture.captureOnce() : nil
+                let ocrText = screenContext?.ocrText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let appName = screenContext?.appName ?? appContext.appName
+
+                var sections: [String] = []
+                if !meaningfulAppContext.isEmpty {
+                    sections.append("App context:\n\(String(meaningfulAppContext.prefix(700)))")
                 }
+                if !ocrText.isEmpty {
+                    sections.append("OCR visual text:\n\(String(ocrText.prefix(1000)))")
+                }
+
+                let contextText = sections.joined(separator: "\n\n")
+                fputs("[meeting] context capture app=\(appName) axChars=\(meaningfulAppContext.count) ocrChars=\(ocrText.count) appended=\(!contextText.isEmpty)\n", stderr)
+                if !contextText.isEmpty {
+                    snapshots.append(Snapshot(
+                        timestamp: screenContext?.capturedAt ?? timestamp,
+                        appName: appName,
+                        contextText: contextText,
+                        ocrCharCount: ocrText.count,
+                        appContextCharCount: meaningfulAppContext.count
+                    ))
+                }
+
                 try? await Task.sleep(for: .seconds(interval))
             }
         }
@@ -306,6 +328,10 @@ actor MeetingScreenContextCollector {
             deduped.append(snapshot)
         }
         snapshots = []
+
+        let totalOCRChars = deduped.reduce(0) { $0 + $1.ocrCharCount }
+        let totalAppContextChars = deduped.reduce(0) { $0 + $1.appContextCharCount }
+        fputs("[meeting] context drain snapshots=\(deduped.count) axChars=\(totalAppContextChars) ocrChars=\(totalOCRChars)\n", stderr)
 
         let result = deduped.map { entry in
             "[\(Self.timeFormatter.string(from: entry.timestamp))] \(entry.appName):\n\(entry.contextText)"

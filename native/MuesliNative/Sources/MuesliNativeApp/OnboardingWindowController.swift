@@ -52,7 +52,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
                 initialStep: progress.currentStep,
                 initialUserName: progress.userName,
                 initialBackend: backend,
-                initialHotkey: hotkey
+                initialHotkey: hotkey,
+                initialSystemAudioRequested: progress.systemAudioRequested
             )
         } else {
             rootView = OnboardingView(

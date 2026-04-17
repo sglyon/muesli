@@ -260,8 +260,9 @@ final class MuesliController: NSObject {
         if !config.hasCompletedOnboarding {
             if let progress = OnboardingProgress.load() {
                 // Start hotkey monitor when resuming past the hotkey config step (step 2).
-                // The hotkey is configured at step 2, permissions at step 3 (which may
-                // restart the app via Screen Recording grant), dictation test at step 4.
+                // The hotkey is configured at step 2, permissions at step 3, and the
+                // single onboarding restart path resumes into the dictation test at step 4.
+                // Screen Recording may trigger that restart itself; otherwise Muesli does.
                 if progress.currentStep > 2 {
                     hotkeyMonitor.targetKeyCode = progress.hotkeyKeyCode
                     hotkeyMonitor.start()

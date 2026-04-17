@@ -668,8 +668,19 @@ struct SettingsView: View {
             permissionStatusRow(
                 "Input Monitoring",
                 granted: CGPreflightListenEventAccess(),
-                action: { CGRequestListenEventAccess() },
+                action: {
+                    if !CGRequestListenEventAccess() {
+                        openPrivacyPane("Privacy_ListenEvent")
+                    }
+                },
                 pane: "Privacy_ListenEvent"
+            )
+            Divider().background(MuesliTheme.surfaceBorder)
+            permissionStatusRow(
+                "Screen Recording",
+                granted: CGPreflightScreenCaptureAccess(),
+                action: { CGRequestScreenCaptureAccess() },
+                pane: "Privacy_ScreenCapture"
             )
         }
     }
@@ -703,9 +714,7 @@ struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: MuesliTheme.cornerSmall))
             }
             Button {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
-                    NSWorkspace.shared.open(url)
-                }
+                openPrivacyPane(pane)
             } label: {
                 Image(systemName: "arrow.up.forward.square")
                     .font(.system(size: 11))
@@ -715,6 +724,12 @@ struct SettingsView: View {
             .help("Open in System Settings")
         }
         .frame(minHeight: 32)
+    }
+
+    private func openPrivacyPane(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - Layout Primitives
