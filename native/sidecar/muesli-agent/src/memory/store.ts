@@ -41,9 +41,10 @@ const storage = new LibSQLStore({ id: 'muesli-coach-storage', url: messagesDbUrl
 const vector = new LibSQLVector({ id: 'muesli-coach-vector', url: vectorsDbUrl });
 
 /**
- * Cache of Memory instances keyed by embedder-key fingerprint so we only
- * rebuild when the OpenAI embedder key changes. The underlying LibSQL
- * storage + vector are shared across all Memory instances.
+ * Cache of Memory instances keyed by (embedder-key fingerprint, working-memory
+ * template hash). Each coach profile sends its own working-memory template, so
+ * we rebuild Memory when either the embedder key or the template changes.
+ * Underlying LibSQL storage + vector are always shared.
  */
 const memoryCache = new Map<string, Memory>();
 
@@ -52,8 +53,19 @@ function embedderFingerprint(embedderKey: string | undefined): string {
   return `openai:${embedderKey.slice(-8)}`;
 }
 
-export function getMemory(embedderKey?: string): Memory {
-  const fp = embedderFingerprint(embedderKey);
+function templateHash(template: string): string {
+  // 32-bit FNV-1a — collisions are fine, we only need cache stability.
+  let h = 0x811c9dc5;
+  for (let i = 0; i < template.length; i++) {
+    h ^= template.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
+export function getMemory(embedderKey?: string, workingMemoryTemplate?: string): Memory {
+  const template = workingMemoryTemplate?.trim() || SALES_COACH_TEMPLATE;
+  const fp = `${embedderFingerprint(embedderKey)}:${templateHash(template)}`;
   const cached = memoryCache.get(fp);
   if (cached) return cached;
 
@@ -71,12 +83,17 @@ export function getMemory(embedderKey?: string): Memory {
       semanticRecall: semanticOn
         ? { topK: 4, messageRange: { before: 2, after: 1 }, scope: 'resource' }
         : false,
-      workingMemory: { enabled: true, template: SALES_COACH_TEMPLATE, scope: 'resource' },
+      workingMemory: { enabled: true, template, scope: 'resource' },
       generateTitle: true,
     },
   });
   memoryCache.set(fp, memory);
   return memory;
+}
+
+/** Test-only: clear the cache so each test starts with a fresh Memory map. */
+export function _resetMemoryCacheForTests(): void {
+  memoryCache.clear();
 }
 
 export async function deleteThread(threadId: string): Promise<void> {

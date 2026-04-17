@@ -39,6 +39,10 @@ struct CoachTurnRequest: Codable {
     var credentials: Credentials
     var systemPrompt: String
     var agentInstructions: String?
+    /// Mastra working-memory template for the active profile. Sidecar caches
+    /// Memory instances by (embedderKey, templateHash) so each profile keeps
+    /// its own working memory.
+    var workingMemoryTemplate: String?
     var turn: Turn
 }
 

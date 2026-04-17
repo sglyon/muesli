@@ -2,7 +2,10 @@ import SwiftUI
 
 struct LiveCoachView: View {
     @ObservedObject var viewModel: LiveCoachViewModel
+    var availableProfiles: [CoachProfile] = []
+    var activeProfileID: UUID? = nil
     var onSend: (String) -> Void
+    var onSelectProfile: ((UUID) -> Void)? = nil
 
     @State private var draft: String = ""
     @FocusState private var chatFieldFocused: Bool
@@ -25,12 +28,19 @@ struct LiveCoachView: View {
     // MARK: - Header
 
     private var headerBar: some View {
-        HStack {
+        HStack(spacing: MuesliTheme.spacing8) {
             Image(systemName: "sparkles")
                 .foregroundStyle(MuesliTheme.accent)
             Text("Coach")
                 .font(MuesliTheme.headline())
                 .foregroundStyle(MuesliTheme.textPrimary)
+            if availableProfiles.count > 1, let activeProfileID, let onSelectProfile {
+                profilePicker(activeID: activeProfileID, onSelect: onSelectProfile)
+            } else if let active = availableProfiles.first(where: { $0.id == activeProfileID }) {
+                Text(active.name)
+                    .font(MuesliTheme.caption())
+                    .foregroundStyle(MuesliTheme.textTertiary)
+            }
             Spacer()
             if viewModel.isStreaming {
                 Text("thinking…")
@@ -41,6 +51,37 @@ struct LiveCoachView: View {
         .padding(.horizontal, MuesliTheme.spacing12)
         .padding(.vertical, MuesliTheme.spacing8)
         .background(MuesliTheme.backgroundRaised)
+    }
+
+    private func profilePicker(activeID: UUID, onSelect: @escaping (UUID) -> Void) -> some View {
+        let activeName = availableProfiles.first(where: { $0.id == activeID })?.name ?? "Coach"
+        return Menu {
+            ForEach(availableProfiles) { profile in
+                Button {
+                    if profile.id != activeID { onSelect(profile.id) }
+                } label: {
+                    if profile.id == activeID {
+                        Label(profile.name, systemImage: "checkmark")
+                    } else {
+                        Text(profile.name)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(activeName)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(MuesliTheme.caption())
+            .foregroundStyle(MuesliTheme.textSecondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(MuesliTheme.backgroundBase)
+            .cornerRadius(4)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     // MARK: - Message list

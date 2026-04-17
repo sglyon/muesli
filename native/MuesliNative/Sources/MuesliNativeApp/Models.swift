@@ -214,37 +214,210 @@ struct HotkeyConfig: Codable, Equatable {
     static let `default` = HotkeyConfig()
 }
 
-struct LiveCoachSettings: Codable, Equatable {
-    var enabled: Bool = false
-    var provider: String = "anthropic"              // "anthropic" | "openai" | "chatgpt"
-    var anthropicModel: String = "claude-sonnet-4-6"
-    var openAIModel: String = "gpt-5.4-mini"
-    var chatGPTModel: String = "gpt-5.4-mini"
-    var anthropicAPIKey: String = ""
-    var systemPrompt: String = LiveCoachSettings.defaultSystemPrompt
-    var agentInstructions: String = ""
-    var proactiveEnabled: Bool = true
-    var minCharsBeforeTrigger: Int = 200
-    var enableSemanticRecall: Bool = true
-    var preserveThreadAcrossMeetings: Bool = true
-
-    static let defaultSystemPrompt: String = """
-    You are a real-time sales coach for Spencer Lyon at Arete Intelligence (data engineering, data science, and AI transformation for mid-market companies). You observe a live meeting transcript. When you receive a <transcript_update>, provide 1-3 short, actionable coaching tips — tone, questions to ask next, objections to anticipate, or discovery threads to pull on. When you receive a <user_message>, answer directly. Keep replies tight (under 120 words unless asked).
-    """
+/// One configurable Live Coach persona (sales call, team retro, exec
+/// briefing, etc.). Each profile carries everything that varies by use case:
+/// the prompt, the model, the working-memory template (what the coach should
+/// keep notes about). Cross-cutting state (API keys, semantic-recall toggle)
+/// lives on `LiveCoachSettings`.
+struct CoachProfile: Codable, Equatable, Identifiable {
+    var id: UUID
+    var name: String
+    var provider: String                          // "anthropic" | "openai" | "chatgpt"
+    var anthropicModel: String
+    var openAIModel: String
+    var chatGPTModel: String
+    var systemPrompt: String
+    var agentInstructions: String
+    /// Mastra working-memory template — sent per-turn so the sidecar can
+    /// scope working memory by profile. Empty means "use sidecar default".
+    var workingMemoryTemplate: String
+    var proactiveEnabled: Bool
+    var minCharsBeforeTrigger: Int
 
     enum CodingKeys: String, CodingKey {
-        case enabled
+        case id
+        case name
         case provider
         case anthropicModel = "anthropic_model"
         case openAIModel = "openai_model"
         case chatGPTModel = "chatgpt_model"
-        case anthropicAPIKey = "anthropic_api_key"
         case systemPrompt = "system_prompt"
         case agentInstructions = "agent_instructions"
+        case workingMemoryTemplate = "working_memory_template"
         case proactiveEnabled = "proactive_enabled"
         case minCharsBeforeTrigger = "min_chars_before_trigger"
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        provider: String = "anthropic",
+        anthropicModel: String = "claude-sonnet-4-6",
+        openAIModel: String = "gpt-5.4-mini",
+        chatGPTModel: String = "gpt-5.4-mini",
+        systemPrompt: String,
+        agentInstructions: String = "",
+        workingMemoryTemplate: String = "",
+        proactiveEnabled: Bool = true,
+        minCharsBeforeTrigger: Int = 200
+    ) {
+        self.id = id
+        self.name = name
+        self.provider = provider
+        self.anthropicModel = anthropicModel
+        self.openAIModel = openAIModel
+        self.chatGPTModel = chatGPTModel
+        self.systemPrompt = systemPrompt
+        self.agentInstructions = agentInstructions
+        self.workingMemoryTemplate = workingMemoryTemplate
+        self.proactiveEnabled = proactiveEnabled
+        self.minCharsBeforeTrigger = minCharsBeforeTrigger
+    }
+
+    var activeModel: String {
+        switch provider {
+        case "anthropic": return anthropicModel
+        case "openai": return openAIModel
+        case "chatgpt": return chatGPTModel
+        default: return ""
+        }
+    }
+
+    static let salesCoachID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+    static let teamMeetingID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+    static let executiveBriefingID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+
+    static let salesCoachPrompt = """
+    You are a real-time sales coach for Spencer Lyon at Arete Intelligence (data engineering, data science, and AI transformation for mid-market companies). You observe a live meeting transcript. When you receive a <transcript_update>, provide 1-3 short, actionable coaching tips — tone, questions to ask next, objections to anticipate, or discovery threads to pull on. When you receive a <user_message>, answer directly. Keep replies tight (under 120 words unless asked).
+    """
+
+    static let teamMeetingPrompt = """
+    You are a real-time facilitator's coach for a team meeting. Watch the transcript for: action items being committed (and by whom), decisions being made (and any unstated assumptions), people being talked over, topics drifting, and questions left unanswered. When you receive a <transcript_update>, surface 1-3 short observations or suggested interventions. When you receive a <user_message>, answer it directly. Plain text, under 120 words unless asked.
+    """
+
+    static let executiveBriefingPrompt = """
+    You are a real-time coach for Spencer Lyon presenting to senior leadership at his firm. Watch for: jargon that needs translating, claims that lack a number, leadership concerns being avoided, and openings to connect the work back to firm-level priorities. When you receive a <transcript_update>, give 1-3 short tips on framing, what to anticipate, or which thread to pull. When you receive a <user_message>, answer it directly. Plain text, under 120 words unless asked.
+    """
+
+    static let salesWorkingMemory = """
+    # Muesli User Profile
+
+    ## About
+    - Name:
+    - Company / offering: (default: Spencer Lyon @ Arete Intelligence — data engineering, data science, AI transformation for mid-market companies)
+    - Common buyer personas:
+
+    ## Pitch Patterns
+    - Strengths observed:
+    - Recurring weaknesses / tells:
+    - Go-to discovery questions that have worked:
+
+    ## Prospect Intel (most-recent-first)
+    - [Prospect / company] — [date] — key concerns, stage, next step:
+
+    ## Objection Library
+    - [Objection] → [best response seen so far]
+    """
+
+    static let teamMeetingWorkingMemory = """
+    # Team Meeting Patterns
+
+    ## Recurring Action Items
+    - [Owner] — [item] — [last seen date]
+
+    ## Decisions Made
+    - [Decision] — [date] — [rationale captured]
+
+    ## Team Dynamics
+    - Voices that tend to dominate:
+    - Voices that tend to go quiet:
+    - Topics that consistently derail:
+
+    ## Open Threads
+    - [Question still unanswered after N meetings]
+    """
+
+    static let executiveBriefingWorkingMemory = """
+    # Leadership Briefing Notes
+
+    ## Stakeholder Map
+    - [Name] — [role] — [known priorities / hot buttons]
+
+    ## Recurring Questions Asked
+    - [Question] — [best answer prepared]
+
+    ## Firm-Level Themes
+    - Strategic priorities currently in play:
+    - Numbers leadership cares about:
+
+    ## Past Pushback
+    - [Topic] — [pushback received] — [follow-up still owed]
+    """
+
+    static let defaults: [CoachProfile] = [
+        CoachProfile(
+            id: salesCoachID,
+            name: "Sales Coach",
+            systemPrompt: salesCoachPrompt,
+            workingMemoryTemplate: salesWorkingMemory
+        ),
+        CoachProfile(
+            id: teamMeetingID,
+            name: "Team Meeting Facilitator",
+            systemPrompt: teamMeetingPrompt,
+            workingMemoryTemplate: teamMeetingWorkingMemory
+        ),
+        CoachProfile(
+            id: executiveBriefingID,
+            name: "Executive Briefing",
+            systemPrompt: executiveBriefingPrompt,
+            workingMemoryTemplate: executiveBriefingWorkingMemory
+        ),
+    ]
+}
+
+struct LiveCoachSettings: Codable, Equatable {
+    var enabled: Bool = false
+    var anthropicAPIKey: String = ""              // shared across profiles
+    var enableSemanticRecall: Bool = true
+    var preserveThreadAcrossMeetings: Bool = true
+    var profiles: [CoachProfile] = CoachProfile.defaults
+    /// The profile selected by default when a meeting starts. The panel can
+    /// still swap profile mid-meeting without changing this value.
+    var activeProfileID: UUID = CoachProfile.salesCoachID
+
+    /// Looks up the active profile, falling back to the first available or a
+    /// freshly-built Sales Coach if profiles is somehow empty.
+    var activeProfile: CoachProfile {
+        if let match = profiles.first(where: { $0.id == activeProfileID }) {
+            return match
+        }
+        return profiles.first ?? CoachProfile(
+            id: CoachProfile.salesCoachID,
+            name: "Sales Coach",
+            systemPrompt: CoachProfile.salesCoachPrompt,
+            workingMemoryTemplate: CoachProfile.salesWorkingMemory
+        )
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case anthropicAPIKey = "anthropic_api_key"
         case enableSemanticRecall = "enable_semantic_recall"
         case preserveThreadAcrossMeetings = "preserve_thread_across_meetings"
+        case profiles
+        case activeProfileID = "active_profile_id"
+
+        // Legacy keys retained so we can migrate older configs that pre-date
+        // profiles. Not encoded back out — only read in init(from:).
+        case legacyProvider = "provider"
+        case legacyAnthropicModel = "anthropic_model"
+        case legacyOpenAIModel = "openai_model"
+        case legacyChatGPTModel = "chatgpt_model"
+        case legacySystemPrompt = "system_prompt"
+        case legacyAgentInstructions = "agent_instructions"
+        case legacyProactiveEnabled = "proactive_enabled"
+        case legacyMinCharsBeforeTrigger = "min_chars_before_trigger"
     }
 
     init() {}
@@ -253,27 +426,43 @@ struct LiveCoachSettings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = LiveCoachSettings()
         enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? defaults.enabled
-        provider = (try? c.decode(String.self, forKey: .provider)) ?? defaults.provider
-        anthropicModel = (try? c.decode(String.self, forKey: .anthropicModel)) ?? defaults.anthropicModel
-        openAIModel = (try? c.decode(String.self, forKey: .openAIModel)) ?? defaults.openAIModel
-        chatGPTModel = (try? c.decode(String.self, forKey: .chatGPTModel)) ?? defaults.chatGPTModel
         anthropicAPIKey = (try? c.decode(String.self, forKey: .anthropicAPIKey)) ?? defaults.anthropicAPIKey
-        systemPrompt = (try? c.decode(String.self, forKey: .systemPrompt)) ?? defaults.systemPrompt
-        agentInstructions = (try? c.decode(String.self, forKey: .agentInstructions)) ?? defaults.agentInstructions
-        proactiveEnabled = (try? c.decode(Bool.self, forKey: .proactiveEnabled)) ?? defaults.proactiveEnabled
-        minCharsBeforeTrigger = (try? c.decode(Int.self, forKey: .minCharsBeforeTrigger)) ?? defaults.minCharsBeforeTrigger
         enableSemanticRecall = (try? c.decode(Bool.self, forKey: .enableSemanticRecall)) ?? defaults.enableSemanticRecall
         preserveThreadAcrossMeetings = (try? c.decode(Bool.self, forKey: .preserveThreadAcrossMeetings)) ?? defaults.preserveThreadAcrossMeetings
+
+        if let decodedProfiles = try? c.decode([CoachProfile].self, forKey: .profiles), !decodedProfiles.isEmpty {
+            profiles = decodedProfiles
+            activeProfileID = (try? c.decode(UUID.self, forKey: .activeProfileID)) ?? decodedProfiles[0].id
+        } else {
+            // Migration: build a single profile from the legacy flat fields.
+            let legacyPrompt = (try? c.decode(String.self, forKey: .legacySystemPrompt))
+                ?? CoachProfile.salesCoachPrompt
+            let migrated = CoachProfile(
+                id: CoachProfile.salesCoachID,
+                name: "Sales Coach",
+                provider: (try? c.decode(String.self, forKey: .legacyProvider)) ?? "anthropic",
+                anthropicModel: (try? c.decode(String.self, forKey: .legacyAnthropicModel)) ?? "claude-sonnet-4-6",
+                openAIModel: (try? c.decode(String.self, forKey: .legacyOpenAIModel)) ?? "gpt-5.4-mini",
+                chatGPTModel: (try? c.decode(String.self, forKey: .legacyChatGPTModel)) ?? "gpt-5.4-mini",
+                systemPrompt: legacyPrompt,
+                agentInstructions: (try? c.decode(String.self, forKey: .legacyAgentInstructions)) ?? "",
+                workingMemoryTemplate: CoachProfile.salesWorkingMemory,
+                proactiveEnabled: (try? c.decode(Bool.self, forKey: .legacyProactiveEnabled)) ?? true,
+                minCharsBeforeTrigger: (try? c.decode(Int.self, forKey: .legacyMinCharsBeforeTrigger)) ?? 200
+            )
+            profiles = [migrated]
+            activeProfileID = migrated.id
+        }
     }
 
-    /// Model ID used for the currently selected provider. Returns empty for unknown providers.
-    var activeModel: String {
-        switch provider {
-        case "anthropic": return anthropicModel
-        case "openai": return openAIModel
-        case "chatgpt": return chatGPTModel
-        default: return ""
-        }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(anthropicAPIKey, forKey: .anthropicAPIKey)
+        try c.encode(enableSemanticRecall, forKey: .enableSemanticRecall)
+        try c.encode(preserveThreadAcrossMeetings, forKey: .preserveThreadAcrossMeetings)
+        try c.encode(profiles, forKey: .profiles)
+        try c.encode(activeProfileID, forKey: .activeProfileID)
     }
 }
 

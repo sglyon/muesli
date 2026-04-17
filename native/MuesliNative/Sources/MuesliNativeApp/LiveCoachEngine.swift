@@ -105,9 +105,18 @@ final class LiveCoachEngine {
 
     private let client: any CoachClientProtocol
     private var settings: LiveCoachSettings
+    private var profile: CoachProfile
     private let config: AppConfig
-    private let resourceId: String
-    private let threadId: String
+    private let baseThreadId: String
+
+    /// Memory bucket for this profile. Each profile gets its own resource so
+    /// working memory + semantic recall don't bleed between use cases.
+    private var resourceId: String { "profile-\(profile.id.uuidString.lowercased())" }
+
+    /// Thread ID is per-(meeting, profile). Mastra threads belong to a single
+    /// resource, so even though the meeting is the same the underlying thread
+    /// must differ when a profile (= resource) switches mid-meeting.
+    private var threadId: String { "\(baseThreadId)-profile-\(profile.id.uuidString.lowercased())" }
 
     // Transcript tracking
     private var lastMicOffset: Int = 0
@@ -124,19 +133,20 @@ final class LiveCoachEngine {
     init(
         client: any CoachClientProtocol,
         settings: LiveCoachSettings,
+        profile: CoachProfile,
         config: AppConfig,
-        resourceId: String,
         threadId: String
     ) {
         self.client = client
         self.settings = settings
+        self.profile = profile
         self.config = config
-        self.resourceId = resourceId
-        self.threadId = threadId
+        self.baseThreadId = threadId
     }
 
     var preserveThreadPreference: Bool { settings.preserveThreadAcrossMeetings }
     var isInFlight: Bool { inFlight }
+    var activeProfile: CoachProfile { profile }
 
     // MARK: - Public API
 
@@ -147,7 +157,7 @@ final class LiveCoachEngine {
             viewModel.placeholderMessage = "Live Coach is disabled. Turn it on in Settings."
             return
         }
-        if !credentialsPresent(for: settings.provider) {
+        if !credentialsPresent(for: profile.provider) {
             viewModel.placeholderMessage = "Configure Live Coach credentials in Settings."
             return
         }
@@ -177,15 +187,15 @@ final class LiveCoachEngine {
     /// delta and fires a proactive turn if thresholds are met.
     func onTranscriptTick(snapshot: CoachTranscriptSnapshot) {
         latestSnapshot = snapshot
-        guard settings.enabled, settings.proactiveEnabled, !inFlight else { return }
-        guard credentialsPresent(for: settings.provider) else { return }
+        guard settings.enabled, profile.proactiveEnabled, !inFlight else { return }
+        guard credentialsPresent(for: profile.provider) else { return }
 
         let (delta, newMicOffset, newSystemOffset, untilSeconds) = extractDelta(from: snapshot)
         if delta.isEmpty {
             return
         }
         pendingDeltaChars += delta.count
-        if pendingDeltaChars < settings.minCharsBeforeTrigger {
+        if pendingDeltaChars < profile.minCharsBeforeTrigger {
             return
         }
 
@@ -205,7 +215,7 @@ final class LiveCoachEngine {
     /// Called when the user types a question in the chat input.
     func sendUserMessage(_ text: String) {
         guard settings.enabled, !inFlight else { return }
-        guard credentialsPresent(for: settings.provider) else {
+        guard credentialsPresent(for: profile.provider) else {
             viewModel.errorText = "Live coach is not configured — check Settings."
             return
         }
@@ -227,6 +237,8 @@ final class LiveCoachEngine {
         let wrapped = CoachXML.wrapUserWithTranscript(user: trimmed, transcript: delta.isEmpty ? nil : delta, since: since, until: untilSeconds)
         Task { await self.runTurn(content: wrapped, kind: .userMessage, displayUser: trimmed) }
     }
+
+    var effectiveThreadID: String { threadId }
 
     func shutdown(preserveThread: Bool) async {
         if !preserveThread {
@@ -281,21 +293,23 @@ final class LiveCoachEngine {
 
     private func buildRequest(content: String, kind: CoachTurnRequest.Turn.Kind) async -> CoachTurnRequest {
         let creds = await makeCredentials()
+        let activeModel = profile.activeModel.isEmpty ? defaultModel(for: profile.provider) : profile.activeModel
         return CoachTurnRequest(
             threadId: threadId,
             resourceId: resourceId,
-            provider: settings.provider,
-            model: settings.activeModel.isEmpty ? defaultModel(for: settings.provider) : settings.activeModel,
+            provider: profile.provider,
+            model: activeModel,
             credentials: creds,
-            systemPrompt: settings.systemPrompt,
-            agentInstructions: settings.agentInstructions.isEmpty ? nil : settings.agentInstructions,
+            systemPrompt: profile.systemPrompt,
+            agentInstructions: profile.agentInstructions.isEmpty ? nil : profile.agentInstructions,
+            workingMemoryTemplate: profile.workingMemoryTemplate.isEmpty ? nil : profile.workingMemoryTemplate,
             turn: CoachTurnRequest.Turn(kind: kind, content: content)
         )
     }
 
     private func makeCredentials() async -> CoachTurnRequest.Credentials {
         var creds = CoachTurnRequest.Credentials()
-        switch settings.provider {
+        switch profile.provider {
         case "anthropic":
             creds.apiKey = settings.anthropicAPIKey
         case "openai":

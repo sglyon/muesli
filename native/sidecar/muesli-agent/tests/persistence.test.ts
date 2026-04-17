@@ -13,7 +13,7 @@ process.env.MUESLI_DATA_DIR = DATA_DIR;
 // Import AFTER MUESLI_DATA_DIR is set — the store reads it at module load.
 const { createApp } = await import('../src/server.ts');
 const { setTestModelOverride } = await import('../src/agent/factory.ts');
-const { deleteResource } = await import('../src/memory/store.ts');
+const { deleteResource, getMemory, _resetMemoryCacheForTests } = await import('../src/memory/store.ts');
 const { MockLanguageModelV3, simulateReadableStream } = await import('ai/test');
 
 const TOKEN = 'persist-test-token';
@@ -213,6 +213,60 @@ describe('LibSQL on-disk persistence', () => {
 
     const survivor = await (await app.fetch(new Request('http://t/thread/other-thread', { headers: authHeaders() }))).json() as { messages: Array<{ content: string }> };
     expect(survivor.messages.length).toBeGreaterThan(0);
+  });
+
+  test('different working memory templates yield different cached Memory instances', () => {
+    _resetMemoryCacheForTests();
+    const m1 = getMemory(undefined, '# Template A');
+    const m2 = getMemory(undefined, '# Template B');
+    const m3 = getMemory(undefined, '# Template A');  // same as m1
+
+    expect(m1).not.toBe(m2);  // different templates → different Memory
+    expect(m1).toBe(m3);       // same template → cached re-use
+  });
+
+  test('per-profile thread+resource scoping isolates messages between profiles', async () => {
+    // The Swift engine namespaces threads as `<meeting>-profile-<id>`. We
+    // mirror that here to prove DELETE /resource for one profile leaves the
+    // other untouched.
+    setTestModelOverride(mockModel('ok'));
+
+    await drain(
+      await app.fetch(
+        new Request('http://t/coach/turn', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(turn(
+            'meeting-1-profile-A',
+            '<user_message>profile A note</user_message>',
+            'profile-A',
+          )),
+        }),
+      ),
+    );
+    await drain(
+      await app.fetch(
+        new Request('http://t/coach/turn', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify(turn(
+            'meeting-1-profile-B',
+            '<user_message>profile B note</user_message>',
+            'profile-B',
+          )),
+        }),
+      ),
+    );
+
+    await deleteResource('profile-A');
+
+    const aHist = await (await app.fetch(new Request('http://t/thread/meeting-1-profile-A', { headers: authHeaders() }))).json() as { messages: unknown[] };
+    expect(aHist.messages).toEqual([]);
+
+    const bHist = await (await app.fetch(new Request('http://t/thread/meeting-1-profile-B', { headers: authHeaders() }))).json() as { messages: Array<{ content: string }> };
+    expect(bHist.messages.some((m) => m.content.includes('profile B note'))).toBe(true);
+
+    await deleteResource('profile-B');
   });
 
   test('two turns on the same thread produce a 4-message history (user/assistant x2)', async () => {

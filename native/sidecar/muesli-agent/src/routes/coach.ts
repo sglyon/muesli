@@ -19,6 +19,7 @@ const CoachTurnSchema = z.object({
   credentials: CredentialsSchema,
   systemPrompt: z.string().min(1),
   agentInstructions: z.string().optional(),
+  workingMemoryTemplate: z.string().optional(),
   turn: z.object({
     kind: z.enum(['transcriptUpdate', 'userMessage']),
     content: z.string().min(1),

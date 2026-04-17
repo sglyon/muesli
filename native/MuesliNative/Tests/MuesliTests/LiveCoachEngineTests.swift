@@ -84,6 +84,7 @@ final class MockCoachClient: CoachClientProtocol {
 private func makeEngine(
     client: MockCoachClient,
     settings: LiveCoachSettings = .testDefault(),
+    profile: CoachProfile? = nil,
     config: AppConfig? = nil,
     threadId: String = "test-thread"
 ) -> LiveCoachEngine {
@@ -93,23 +94,45 @@ private func makeEngine(
         // engine code that consults it doesn't trip on an empty value.
         resolved.openAIAPIKey = "test-openai-key"
     }
+    let resolvedProfile = profile ?? settings.activeProfile
     return LiveCoachEngine(
         client: client,
         settings: settings,
+        profile: resolvedProfile,
         config: resolved,
-        resourceId: "user-test",
         threadId: threadId
     )
+}
+
+/// Mutates the active profile in-place so each test can tweak just the
+/// profile fields it cares about without rebuilding the whole settings.
+private func withProfile(_ settings: inout LiveCoachSettings, _ mutate: (inout CoachProfile) -> Void) {
+    if let idx = settings.profiles.firstIndex(where: { $0.id == settings.activeProfileID }) {
+        mutate(&settings.profiles[idx])
+    }
 }
 
 private extension LiveCoachSettings {
     static func testDefault() -> LiveCoachSettings {
         var s = LiveCoachSettings()
         s.enabled = true
-        s.provider = "anthropic"
         s.anthropicAPIKey = "ant-test-key"
-        s.proactiveEnabled = true
-        s.minCharsBeforeTrigger = 50
+        // Replace the seeded defaults with a single test-friendly profile.
+        let p = CoachProfile(
+            id: CoachProfile.salesCoachID,
+            name: "Test Coach",
+            provider: "anthropic",
+            anthropicModel: "claude-sonnet-4-6",
+            openAIModel: "gpt-5.4-mini",
+            chatGPTModel: "gpt-5.4-mini",
+            systemPrompt: "You are a helpful coach.",
+            agentInstructions: "",
+            workingMemoryTemplate: "# Test profile working memory",
+            proactiveEnabled: true,
+            minCharsBeforeTrigger: 50
+        )
+        s.profiles = [p]
+        s.activeProfileID = p.id
         return s
     }
 }
@@ -222,7 +245,7 @@ struct LiveCoachEngineProactiveTests {
     func belowThreshold() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.minCharsBeforeTrigger = 200
+        withProfile(&settings) { $0.minCharsBeforeTrigger = 200 }
         let engine = makeEngine(client: client, settings: settings)
 
         engine.onTranscriptTick(snapshot: snapshot(mic: [micSeg("short")]))
@@ -238,7 +261,7 @@ struct LiveCoachEngineProactiveTests {
     func crossesThreshold() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.minCharsBeforeTrigger = 30
+        withProfile(&settings) { $0.minCharsBeforeTrigger = 30 }
         let engine = makeEngine(client: client, settings: settings)
 
         // First tick: short — must not fire on its own.
@@ -264,8 +287,10 @@ struct LiveCoachEngineProactiveTests {
     func proactiveDisabled() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.minCharsBeforeTrigger = 5
-        settings.proactiveEnabled = false
+        withProfile(&settings) {
+            $0.minCharsBeforeTrigger = 5
+            $0.proactiveEnabled = false
+        }
         let engine = makeEngine(client: client, settings: settings)
 
         engine.onTranscriptTick(snapshot: snapshot(mic: [micSeg("more than five chars")]))
@@ -278,7 +303,7 @@ struct LiveCoachEngineProactiveTests {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
         settings.enabled = false
-        settings.minCharsBeforeTrigger = 5
+        withProfile(&settings) { $0.minCharsBeforeTrigger = 5 }
         let engine = makeEngine(client: client, settings: settings)
 
         engine.onTranscriptTick(snapshot: snapshot(mic: [micSeg("more than five chars")]))
@@ -290,8 +315,8 @@ struct LiveCoachEngineProactiveTests {
     func noCredentials() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.minCharsBeforeTrigger = 5
         settings.anthropicAPIKey = "" // missing!
+        withProfile(&settings) { $0.minCharsBeforeTrigger = 5 }
         let engine = makeEngine(client: client, settings: settings)
 
         engine.onTranscriptTick(snapshot: snapshot(mic: [micSeg("more than five chars")]))
@@ -304,7 +329,7 @@ struct LiveCoachEngineProactiveTests {
         let client = MockCoachClient()
         client.holdNext()
         var settings = LiveCoachSettings.testDefault()
-        settings.minCharsBeforeTrigger = 5
+        withProfile(&settings) { $0.minCharsBeforeTrigger = 5 }
         let engine = makeEngine(client: client, settings: settings)
 
         engine.onTranscriptTick(snapshot: snapshot(mic: [micSeg("first sufficient chunk of text")]))
@@ -468,7 +493,7 @@ struct LiveCoachEngineStreamingTests {
         let client = MockCoachClient()
         client.scriptedStreams = [[.delta("nice opening"), .done]]
         var settings = LiveCoachSettings.testDefault()
-        settings.minCharsBeforeTrigger = 5
+        withProfile(&settings) { $0.minCharsBeforeTrigger = 5 }
         let engine = makeEngine(client: client, settings: settings)
 
         engine.onTranscriptTick(snapshot: snapshot(mic: [micSeg("plenty of transcript text", end: 5)]))
@@ -488,9 +513,11 @@ struct LiveCoachEngineRequestTests {
     func anthropicCredentials() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.provider = "anthropic"
         settings.anthropicAPIKey = "ant-secret"
-        settings.anthropicModel = "claude-sonnet-4-6"
+        withProfile(&settings) {
+            $0.provider = "anthropic"
+            $0.anthropicModel = "claude-sonnet-4-6"
+        }
         let engine = makeEngine(client: client, settings: settings)
         engine.sendUserMessage("test")
 
@@ -506,8 +533,10 @@ struct LiveCoachEngineRequestTests {
     func openAICredentials() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.provider = "openai"
-        settings.openAIModel = "gpt-5.4-mini"
+        withProfile(&settings) {
+            $0.provider = "openai"
+            $0.openAIModel = "gpt-5.4-mini"
+        }
         var config = AppConfig()
         config.openAIAPIKey = "openai-real-key"
         let engine = makeEngine(client: client, settings: settings, config: config)
@@ -526,7 +555,7 @@ struct LiveCoachEngineRequestTests {
     func agentInstructionsPassthrough() async {
         let client = MockCoachClient()
         var settings = LiveCoachSettings.testDefault()
-        settings.agentInstructions = "Always be terse."
+        withProfile(&settings) { $0.agentInstructions = "Always be terse." }
         let engine = makeEngine(client: client, settings: settings)
         engine.sendUserMessage("hi")
 

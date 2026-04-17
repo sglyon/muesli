@@ -21,6 +21,12 @@ export interface CoachTurnRequest {
   credentials: CoachCredentials;
   systemPrompt: string;
   agentInstructions?: string;
+  /**
+   * Mastra working-memory template for the active coach profile. Sidecar
+   * caches Memory instances by (embedderKey, templateHash) so each profile
+   * keeps its own working memory. Omitted = use the sales-coach default.
+   */
+  workingMemoryTemplate?: string;
   turn: {
     kind: CoachTurnKind;
     content: string;

@@ -47,7 +47,7 @@ export function buildCoachAgent(req: CoachTurnRequest): Agent {
     name: 'Live Coach',
     instructions: buildInstructions(req),
     model: testModelOverride ?? buildModel(req),
-    memory: getMemory(req.credentials.embedderAPIKey),
+    memory: getMemory(req.credentials.embedderAPIKey, req.workingMemoryTemplate),
   });
 }
 

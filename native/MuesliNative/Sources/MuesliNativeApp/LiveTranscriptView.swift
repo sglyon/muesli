@@ -16,8 +16,11 @@ final class LiveTranscriptViewModel: ObservableObject {
 struct LiveTranscriptView: View {
     @ObservedObject var viewModel: LiveTranscriptViewModel
     var coachViewModel: LiveCoachViewModel?
+    var availableProfiles: [CoachProfile] = []
+    var activeProfileID: UUID? = nil
     var onClose: (() -> Void)?
     var onSendCoachMessage: ((String) -> Void)?
+    var onSelectProfile: ((UUID) -> Void)? = nil
 
     var body: some View {
         Group {
@@ -25,9 +28,13 @@ struct LiveTranscriptView: View {
                 HSplitView {
                     transcriptColumn
                         .frame(minWidth: 280, idealWidth: 420)
-                    LiveCoachView(viewModel: coachViewModel) { text in
-                        onSendCoachMessage?(text)
-                    }
+                    LiveCoachView(
+                        viewModel: coachViewModel,
+                        availableProfiles: availableProfiles,
+                        activeProfileID: activeProfileID,
+                        onSend: { text in onSendCoachMessage?(text) },
+                        onSelectProfile: onSelectProfile
+                    )
                     .frame(minWidth: 320, idealWidth: 480)
                 }
             } else {

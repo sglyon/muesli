@@ -15,6 +15,11 @@ final class LiveTranscriptPanelController {
     private var coachEngine: LiveCoachEngine?
     private weak var coachSidecar: LiveCoachSidecar?
     private var currentThreadId: String?
+    private var currentConfig: AppConfig?
+    /// Active profile id for THIS panel session — independent of the global
+    /// default in settings, so swapping profiles mid-meeting doesn't change
+    /// the user's preferred default for new meetings.
+    private var sessionActiveProfileID: UUID?
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -33,18 +38,11 @@ final class LiveTranscriptPanelController {
 
         self.coachSidecar = coachSidecar
         currentThreadId = "meeting-\(meetingID)"
+        currentConfig = config
+        sessionActiveProfileID = config.liveCoach.activeProfileID
 
-        if config.liveCoach.enabled, let sidecar = coachSidecar, sidecar.isRunning {
-            let client = LiveCoachClient(sidecar: sidecar)
-            let engine = LiveCoachEngine(
-                client: client,
-                settings: config.liveCoach,
-                config: config,
-                resourceId: "user-muesli",
-                threadId: currentThreadId!
-            )
-            self.coachEngine = engine
-            Task { await engine.bootstrap() }
+        if config.liveCoach.enabled, coachSidecar?.isRunning == true {
+            instantiateCoachEngine(profile: config.liveCoach.activeProfile)
         } else {
             self.coachEngine = nil
         }
@@ -85,6 +83,48 @@ final class LiveTranscriptPanelController {
         }
     }
 
+    private func instantiateCoachEngine(profile: CoachProfile) {
+        guard let sidecar = coachSidecar, let threadId = currentThreadId, let config = currentConfig else { return }
+        let client = LiveCoachClient(sidecar: sidecar)
+        let engine = LiveCoachEngine(
+            client: client,
+            settings: config.liveCoach,
+            profile: profile,
+            config: config,
+            threadId: threadId
+        )
+        self.coachEngine = engine
+        sessionActiveProfileID = profile.id
+        Task { await engine.bootstrap() }
+    }
+
+    /// Called when the user picks a different profile in the panel header.
+    /// Swaps the engine for one bound to the new profile and rehydrates from
+    /// that profile's prior thread (likely empty for a never-used combo).
+    private func switchToProfile(id: UUID) {
+        guard let config = currentConfig else { return }
+        guard let next = config.liveCoach.profiles.first(where: { $0.id == id }) else { return }
+        if let current = coachEngine?.activeProfile, current.id == next.id { return }
+        instantiateCoachEngine(profile: next)
+    }
+
+    private func refreshPanelContent() {
+        guard let panel else { return }
+        let rootView = LiveTranscriptView(
+            viewModel: viewModel,
+            coachViewModel: coachEngine?.viewModel,
+            availableProfiles: currentConfig?.liveCoach.profiles ?? [],
+            activeProfileID: sessionActiveProfileID,
+            onClose: { [weak self] in self?.hide() },
+            onSendCoachMessage: { [weak self] text in self?.coachEngine?.sendUserMessage(text) },
+            onSelectProfile: { [weak self] id in
+                self?.switchToProfile(id: id)
+                self?.refreshPanelContent()
+            }
+        )
+        panel.contentView = NSHostingView(rootView: rootView)
+    }
+
     // MARK: - Panel construction
 
     private func buildPanel() {
@@ -116,8 +156,15 @@ final class LiveTranscriptPanelController {
         let rootView = LiveTranscriptView(
             viewModel: viewModel,
             coachViewModel: coachEngine?.viewModel,
+            availableProfiles: currentConfig?.liveCoach.profiles ?? [],
+            activeProfileID: sessionActiveProfileID,
             onClose: { [weak self] in self?.hide() },
-            onSendCoachMessage: { [weak self] text in self?.coachEngine?.sendUserMessage(text) }
+            onSendCoachMessage: { [weak self] text in self?.coachEngine?.sendUserMessage(text) },
+            onSelectProfile: { [weak self] id in
+                self?.switchToProfile(id: id)
+                // Rebuild the host view so the picker reflects the new active id.
+                self?.refreshPanelContent()
+            }
         )
         panel.contentView = NSHostingView(rootView: rootView)
 

@@ -227,7 +227,6 @@ struct SettingsView: View {
 
     private var liveCoachSection: some View {
         let coach = appState.config.liveCoach
-        let currentProvider = CoachProviderOption.all.first(where: { $0.backend == coach.provider }) ?? .anthropic
         return settingsSection("Live Coach") {
             settingsRow("Enable live coach during meetings") {
                 settingsSwitch(isOn: coach.enabled) { newValue in
@@ -237,121 +236,24 @@ struct SettingsView: View {
 
             if coach.enabled {
                 Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Provider") {
+                settingsRow("Anthropic API Key") {
+                    PastableSecureField(
+                        text: coach.anthropicAPIKey,
+                        placeholder: "sk-ant-...",
+                        onChange: { val in controller.updateConfig { $0.liveCoach.anthropicAPIKey = val } }
+                    )
+                    .frame(width: controlWidth, height: 22)
+                }
+                Divider().background(MuesliTheme.surfaceBorder)
+                settingsRow("Default profile") {
                     settingsMenu(
-                        selection: currentProvider.label,
-                        options: CoachProviderOption.all.map(\.label)
+                        selection: coach.activeProfile.name,
+                        options: coach.profiles.map(\.name)
                     ) { label in
-                        if let option = CoachProviderOption.all.first(where: { $0.label == label }) {
-                            controller.updateConfig { $0.liveCoach.provider = option.backend }
+                        if let chosen = coach.profiles.first(where: { $0.name == label }) {
+                            controller.updateConfig { $0.liveCoach.activeProfileID = chosen.id }
                         }
                     }
-                }
-
-                Divider().background(MuesliTheme.surfaceBorder)
-                if currentProvider.backend == "anthropic" {
-                    settingsRow("API Key") {
-                        PastableSecureField(
-                            text: coach.anthropicAPIKey,
-                            placeholder: "sk-ant-...",
-                            onChange: { val in controller.updateConfig { $0.liveCoach.anthropicAPIKey = val } }
-                        )
-                        .frame(width: controlWidth, height: 22)
-                    }
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Model") {
-                        settingsTextField(
-                            value: coach.anthropicModel,
-                            placeholder: "claude-sonnet-4-6"
-                        ) { val in controller.updateConfig { $0.liveCoach.anthropicModel = val } }
-                    }
-                } else if currentProvider.backend == "openai" {
-                    settingsRow("OpenAI API Key") {
-                        // Re-use existing openAI key; reminder displayed below.
-                        PastableSecureField(
-                            text: appState.config.openAIAPIKey,
-                            placeholder: "sk-...",
-                            onChange: { val in controller.updateConfig { $0.openAIAPIKey = val } }
-                        )
-                        .frame(width: controlWidth, height: 22)
-                    }
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Model") {
-                        settingsTextField(
-                            value: coach.openAIModel,
-                            placeholder: "gpt-5.4-mini"
-                        ) { val in controller.updateConfig { $0.liveCoach.openAIModel = val } }
-                    }
-                } else {
-                    // ChatGPT OAuth — reuse existing sign-in status via MeetingSummary section.
-                    settingsRow("Account") {
-                        Text(appState.isChatGPTAuthenticated
-                            ? "Signed in via Meetings ▸ ChatGPT"
-                            : "Sign in under Meetings ▸ ChatGPT first")
-                            .font(MuesliTheme.caption())
-                            .foregroundStyle(MuesliTheme.textTertiary)
-                    }
-                    Divider().background(MuesliTheme.surfaceBorder)
-                    settingsRow("Model") {
-                        settingsTextField(
-                            value: coach.chatGPTModel,
-                            placeholder: "gpt-5.4-mini"
-                        ) { val in controller.updateConfig { $0.liveCoach.chatGPTModel = val } }
-                    }
-                }
-
-                Divider().background(MuesliTheme.surfaceBorder)
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("System prompt")
-                        .font(MuesliTheme.body())
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                    TextEditor(text: Binding(
-                        get: { coach.systemPrompt },
-                        set: { val in controller.updateConfig { $0.liveCoach.systemPrompt = val } }
-                    ))
-                    .font(MuesliTheme.body())
-                    .frame(minHeight: 80, maxHeight: 160)
-                    .background(MuesliTheme.backgroundBase)
-                    .cornerRadius(6)
-                }
-                .padding(.vertical, MuesliTheme.spacing8)
-
-                VStack(alignment: .leading, spacing: MuesliTheme.spacing4) {
-                    Text("Agent instructions (optional, appended to system prompt)")
-                        .font(MuesliTheme.body())
-                        .foregroundStyle(MuesliTheme.textPrimary)
-                    TextEditor(text: Binding(
-                        get: { coach.agentInstructions },
-                        set: { val in controller.updateConfig { $0.liveCoach.agentInstructions = val } }
-                    ))
-                    .font(MuesliTheme.body())
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .background(MuesliTheme.backgroundBase)
-                    .cornerRadius(6)
-                }
-                .padding(.bottom, MuesliTheme.spacing8)
-
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Proactive commentary") {
-                    settingsSwitch(isOn: coach.proactiveEnabled) { newValue in
-                        controller.updateConfig { $0.liveCoach.proactiveEnabled = newValue }
-                    }
-                }
-                Divider().background(MuesliTheme.surfaceBorder)
-                settingsRow("Trigger after N new chars") {
-                    Stepper(
-                        value: Binding(
-                            get: { coach.minCharsBeforeTrigger },
-                            set: { val in controller.updateConfig { $0.liveCoach.minCharsBeforeTrigger = val } }
-                        ),
-                        in: 50...2000, step: 50
-                    ) {
-                        Text("\(coach.minCharsBeforeTrigger)")
-                            .font(MuesliTheme.body())
-                            .foregroundStyle(MuesliTheme.textPrimary)
-                            .monospacedDigit()
-                    }
-                    .frame(width: controlWidth)
                 }
                 Divider().background(MuesliTheme.surfaceBorder)
                 settingsRow("Enable semantic recall across meetings") {
@@ -362,7 +264,7 @@ struct SettingsView: View {
                 if coach.enableSemanticRecall, appState.config.openAIAPIKey.isEmpty {
                     HStack {
                         Spacer()
-                        Text("Add an OpenAI API key under Meetings → OpenAI (or directly in config) to enable semantic recall — it's used only for embeddings.")
+                        Text("Add an OpenAI API key under Meetings → OpenAI to enable semantic recall — it's used only for embeddings.")
                             .font(MuesliTheme.caption())
                             .foregroundStyle(MuesliTheme.textTertiary)
                             .multilineTextAlignment(.trailing)
@@ -374,6 +276,164 @@ struct SettingsView: View {
                         controller.updateConfig { $0.liveCoach.preserveThreadAcrossMeetings = newValue }
                     }
                 }
+
+                Divider().background(MuesliTheme.surfaceBorder)
+                profileManager(coach: coach)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func profileManager(coach: LiveCoachSettings) -> some View {
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack {
+                Text("Profiles")
+                    .font(MuesliTheme.body())
+                    .foregroundStyle(MuesliTheme.textPrimary)
+                Spacer()
+                actionButton("Add profile") {
+                    let copy = CoachProfile(
+                        name: "New Profile",
+                        systemPrompt: "You are a meeting coach. Reply with 1-3 short, actionable observations when you receive a <transcript_update>; answer directly when you receive a <user_message>. Plain text, under 120 words."
+                    )
+                    controller.updateConfig { $0.liveCoach.profiles.append(copy) }
+                }
+            }
+            ForEach(coach.profiles) { profile in
+                profileRow(profile, isOnly: coach.profiles.count == 1)
+                    .padding(MuesliTheme.spacing8)
+                    .background(MuesliTheme.backgroundBase)
+                    .cornerRadius(MuesliTheme.cornerSmall)
+            }
+        }
+        .padding(.top, MuesliTheme.spacing8)
+    }
+
+    @ViewBuilder
+    private func profileRow(_ profile: CoachProfile, isOnly: Bool) -> some View {
+        let provider = CoachProviderOption.all.first(where: { $0.backend == profile.provider }) ?? .anthropic
+        VStack(alignment: .leading, spacing: MuesliTheme.spacing8) {
+            HStack {
+                TextField("Profile name", text: Binding(
+                    get: { profile.name },
+                    set: { val in updateProfile(profile.id) { $0.name = val } }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .font(MuesliTheme.body())
+                Spacer()
+                if !isOnly {
+                    Button(role: .destructive) {
+                        controller.updateConfig { cfg in
+                            cfg.liveCoach.profiles.removeAll { $0.id == profile.id }
+                            if cfg.liveCoach.activeProfileID == profile.id, let first = cfg.liveCoach.profiles.first {
+                                cfg.liveCoach.activeProfileID = first.id
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "trash")
+                            .foregroundStyle(MuesliTheme.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            HStack(spacing: MuesliTheme.spacing12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Provider").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                    settingsMenu(
+                        selection: provider.label,
+                        options: CoachProviderOption.all.map(\.label)
+                    ) { label in
+                        if let opt = CoachProviderOption.all.first(where: { $0.label == label }) {
+                            updateProfile(profile.id) { $0.provider = opt.backend }
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Model").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                    let modelBinding = Binding(
+                        get: { profile.activeModel },
+                        set: { val in
+                            updateProfile(profile.id) { p in
+                                switch p.provider {
+                                case "anthropic": p.anthropicModel = val
+                                case "openai": p.openAIModel = val
+                                case "chatgpt": p.chatGPTModel = val
+                                default: break
+                                }
+                            }
+                        }
+                    )
+                    TextField("model id", text: modelBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: controlWidth)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("System prompt").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                TextEditor(text: Binding(
+                    get: { profile.systemPrompt },
+                    set: { val in updateProfile(profile.id) { $0.systemPrompt = val } }
+                ))
+                .font(MuesliTheme.body())
+                .frame(minHeight: 80, maxHeight: 160)
+                .background(MuesliTheme.backgroundRaised)
+                .cornerRadius(6)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Working memory template").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                TextEditor(text: Binding(
+                    get: { profile.workingMemoryTemplate },
+                    set: { val in updateProfile(profile.id) { $0.workingMemoryTemplate = val } }
+                ))
+                .font(MuesliTheme.body())
+                .frame(minHeight: 60, maxHeight: 140)
+                .background(MuesliTheme.backgroundRaised)
+                .cornerRadius(6)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Agent instructions (optional)").font(MuesliTheme.caption()).foregroundStyle(MuesliTheme.textTertiary)
+                TextEditor(text: Binding(
+                    get: { profile.agentInstructions },
+                    set: { val in updateProfile(profile.id) { $0.agentInstructions = val } }
+                ))
+                .font(MuesliTheme.body())
+                .frame(minHeight: 40, maxHeight: 100)
+                .background(MuesliTheme.backgroundRaised)
+                .cornerRadius(6)
+            }
+
+            HStack {
+                Toggle("Proactive commentary", isOn: Binding(
+                    get: { profile.proactiveEnabled },
+                    set: { val in updateProfile(profile.id) { $0.proactiveEnabled = val } }
+                ))
+                .toggleStyle(.switch)
+                .tint(MuesliTheme.accent)
+                Spacer()
+                Stepper(
+                    value: Binding(
+                        get: { profile.minCharsBeforeTrigger },
+                        set: { val in updateProfile(profile.id) { $0.minCharsBeforeTrigger = val } }
+                    ),
+                    in: 50...2000, step: 50
+                ) {
+                    Text("trigger after \(profile.minCharsBeforeTrigger) chars")
+                        .font(MuesliTheme.caption())
+                        .foregroundStyle(MuesliTheme.textSecondary)
+                        .monospacedDigit()
+                }
+            }
+        }
+    }
+
+    private func updateProfile(_ id: UUID, _ mutate: @escaping (inout CoachProfile) -> Void) {
+        controller.updateConfig { cfg in
+            if let idx = cfg.liveCoach.profiles.firstIndex(where: { $0.id == id }) {
+                mutate(&cfg.liveCoach.profiles[idx])
             }
         }
     }
