@@ -353,9 +353,20 @@ final class MeetingSession {
                     let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: micChunkURL, backend: backend, customWords: self.serializedCustomWords)
                     if !result.text.isEmpty {
                         fputs("[meeting] mic chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
-                        let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
-                        self.resolvedMicSegments.withLock { $0.append(segment) }
-                        return segment
+                        // Use token-level segments with timing when available for accurate
+                        // overlap detection with system audio stream.
+                        let hasTimedSegments = result.segments.count > 1 ||
+                            result.segments.first.map { $0.end > $0.start } ?? false
+                        if hasTimedSegments {
+                            let offsetSegments = result.segments.map { seg in
+                                SpeechSegment(start: seg.start + chunkOffset, end: seg.end + chunkOffset, text: seg.text)
+                            }
+                            self.resolvedMicSegments.withLock { $0.append(contentsOf: offsetSegments) }
+                        } else {
+                            let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
+                            self.resolvedMicSegments.withLock { $0.append(segment) }
+                        }
+                        return SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
                     }
                 } catch {
                     fputs("[meeting] mic chunk transcription failed: \(error)\n", stderr)
@@ -387,8 +398,21 @@ final class MeetingSession {
                     let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: systemChunkURL, backend: backend, customWords: self.serializedCustomWords)
                     if !result.text.isEmpty {
                         fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
-                        let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
-                        self.resolvedSystemSegments.withLock { $0.append(segment) }
+                        // Use token-level segments with timing when available so that
+                        // diarization can match each token to the correct speaker by
+                        // time overlap. Without this, the whole chunk collapses to a
+                        // point in time and only the first speaker gets attributed.
+                        let hasTimedSegments = result.segments.count > 1 ||
+                            result.segments.first.map { $0.end > $0.start } ?? false
+                        if hasTimedSegments {
+                            let offsetSegments = result.segments.map { seg in
+                                SpeechSegment(start: seg.start + chunkOffset, end: seg.end + chunkOffset, text: seg.text)
+                            }
+                            self.resolvedSystemSegments.withLock { $0.append(contentsOf: offsetSegments) }
+                        } else {
+                            let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
+                            self.resolvedSystemSegments.withLock { $0.append(segment) }
+                        }
 
                         // Run diarization on this chunk for live speaker labels.
                         // The shared DiarizerManager's SpeakerManager persists across chunks,
@@ -426,7 +450,7 @@ final class MeetingSession {
                             fputs("[meeting] chunk diarization failed: \(error)\n", stderr)
                         }
 
-                        return segment
+                        return SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
                     }
                 } catch {
                     fputs("[meeting] system chunk transcription failed: \(error)\n", stderr)

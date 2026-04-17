@@ -301,6 +301,89 @@ struct TranscriptFormatterTests {
         #expect(result.contains("Speaker 3: Charlie talks"))
     }
 
+    // MARK: - Token-level diarization (simulating live chunk behavior)
+
+    @Test("token-level segments matched to correct speakers via time overlap")
+    func tokenLevelDiarizationMatching() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        // Simulate token-level ASR output from a single chunk (like FluidAudio produces)
+        // Speaker A talks 0-5s, Speaker B talks 6-10s
+        let system = [
+            SpeechSegment(start: 0.0, end: 0.5, text: "Hello "),
+            SpeechSegment(start: 0.5, end: 1.0, text: "from "),
+            SpeechSegment(start: 1.0, end: 2.0, text: "speaker A. "),
+            SpeechSegment(start: 6.0, end: 6.5, text: "And "),
+            SpeechSegment(start: 6.5, end: 7.0, text: "speaker "),
+            SpeechSegment(start: 7.0, end: 8.0, text: "B here."),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_A", start: 0.0, end: 5.0),
+            makeDiarSeg(speakerId: "spk_B", start: 5.5, end: 10.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        let lines = result.components(separatedBy: "\n")
+        // Consolidation should merge tokens into 2 lines (one per speaker)
+        #expect(lines.count == 2)
+        #expect(lines[0].contains("Speaker 1:"))
+        #expect(lines[0].contains("Hello"))
+        #expect(lines[1].contains("Speaker 2:"))
+        #expect(lines[1].contains("B here"))
+    }
+
+    @Test("point-in-time segments only match first speaker (demonstrates pre-fix behavior)")
+    func pointInTimeSegmentLimitation() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        // A single segment with start=end (the old behavior) can only match one speaker
+        let system = [
+            SpeechSegment(start: 0.0, end: 0.0, text: "Both speakers talking"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_A", start: 0.0, end: 5.0),
+            makeDiarSeg(speakerId: "spk_B", start: 5.0, end: 10.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        // With a point segment, only the first speaker can be matched
+        #expect(result.contains("Speaker 1: Both speakers talking"))
+        #expect(!result.contains("Speaker 2"))
+    }
+
+    // MARK: - Stream overlap detection with timed segments
+
+    @Test("stream overlap detection works with token-level segments")
+    func streamOverlapWithTimedSegments() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        // Both mic and system have tokens at similar times → high overlap → single-stream mode
+        let mic = [
+            SpeechSegment(start: 0.0, end: 2.0, text: "Hello world"),
+            SpeechSegment(start: 5.0, end: 7.0, text: "Testing one two"),
+        ]
+        let system = [
+            SpeechSegment(start: 0.5, end: 2.5, text: "Hello world"),
+            SpeechSegment(start: 5.5, end: 7.5, text: "Testing one two"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 8.0),
+        ]
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+        // High overlap → should use system audio with diarization (Speaker 1), not "You"
+        #expect(result.contains("Speaker 1:"))
+    }
+
     // MARK: - Helpers
 
     private func makeDiarSeg(speakerId: String, start: Float, end: Float) -> TimedSpeakerSegment {
