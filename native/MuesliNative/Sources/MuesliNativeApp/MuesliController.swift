@@ -89,6 +89,7 @@ final class MuesliController: NSObject {
     private var meetingStartingNowTimers = [String: Timer]()
     private var notifiedUpcomingEventIDs = Set<String>()
 
+    private var searchTask: Task<Void, Never>?
     private var maraudersMapCountdown: MaraudersMapCountdownController?
 
     private var statusBarController: StatusBarController?
@@ -414,6 +415,37 @@ final class MuesliController: NSObject {
         if appState.hiddenCalendarEventIDs != persisted {
             appState.hiddenCalendarEventIDs = persisted
         }
+    }
+
+    func performSearch(query: String) {
+        searchTask?.cancel()
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        appState.searchQuery = trimmed
+        guard !trimmed.isEmpty else {
+            appState.searchResultDictations = []
+            appState.searchResultMeetings = []
+            return
+        }
+        let store = self.dictationStore
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let (dictations, meetings) = await Task.detached(priority: .userInitiated) {
+                let d = (try? store.searchDictations(query: trimmed)) ?? []
+                let m = (try? store.searchMeetings(query: trimmed)) ?? []
+                return (d, m)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.appState.searchResultDictations = dictations
+            self.appState.searchResultMeetings = meetings
+        }
+    }
+
+    func clearSearch() {
+        searchTask?.cancel()
+        appState.searchQuery = ""
+        appState.searchResultDictations = []
+        appState.searchResultMeetings = []
     }
 
     func updateConfig(_ mutate: (inout AppConfig) -> Void) {
