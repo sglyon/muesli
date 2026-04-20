@@ -1,17 +1,37 @@
 project: muesli
-last_updated: 2026-04-17
+last_updated: 2026-04-20
 
 overview: |
   Muesli is a macOS native app (Swift) for meeting recording + dictation.
-  Main Swift package at native/MuesliNative/. Uses FluidAudio (external) for
-  VAD, ASR, and diarization. Tests live in Tests/MuesliTests/.
+  Swift package at native/MuesliNative/ (split into MuesliCore, MuesliCLI,
+  MuesliNativeApp targets). Uses FluidAudio (VAD/ASR/diarization) and
+  WhisperKit (CoreML/ANE). Tests in Tests/MuesliTests/.
+  Live Coach adds a Bun-compiled TypeScript sidecar at
+  native/sidecar/muesli-agent/ (Mastra + LibSQL).
+
+upstream:
+  repo: "pHequals7/muesli (git remote named 'upstream')"
+  merge_strategy: |
+    Big merges (70 commits, 22k+ insertions as of v0.6.0): expect
+    significant conflicts in MeetingSession, MuesliController, SettingsView,
+    TranscriptFormatter, Models, StatusBarController, SystemAudioRecorder.
+    SettingsView is pane-based (generalSettingsPane, meetingsSettingsPane,
+    etc.); Live Coach lives as its own pane (.liveCoach) using the existing
+    liveCoachSection + profileManager helpers.
+    System audio has two implementations toggled by config.useCoreAudioTap
+    — CoreAudioSystemRecorder (new default) and SystemAudioRecorder
+    (ScreenCaptureKit, legacy). Text-based bleed detection is gone —
+    MeetingBleedDetector does embedding-based detection post-meeting.
 
 build_and_test:
-  test_command: "cd native/MuesliNative && swift test"
-  filter_example: "swift test --filter TranscriptFormatterTests"
+  swift_test: "cd native/MuesliNative && swift test"
+  swift_filter: "swift test --filter LiveCoach"
+  sidecar_test: "cd native/sidecar/muesli-agent && bun test"
+  app_rebuild: "MUESLI_SKIP_SIGN=1 MUESLI_SIDECAR_NATIVE_ONLY=1 bash scripts/build_native_app.sh"
   notes:
-    - "Tests run fast (~40s total for 221 tests, 41 suites)."
-    - "Swift Testing framework (not XCTest) — uses @Test and #expect."
+    - "Swift Testing framework (not XCTest) — @Test, #expect."
+    - "~246+ Swift tests, ~24+ sidecar tests."
+    - "After rebuilding .app the user must quit and relaunch (running instance keeps old binaries)."
 
 key_architecture:
   meeting_pipeline: |
@@ -21,24 +41,101 @@ key_architecture:
     TranscriptFormatter.merge() attributes tokens to speakers via time
     overlap with diarization segments, with stream-overlap dedup (Jaccard).
 
-  critical_invariant:
-    name: "token-level timing preserved through chunks"
-    why: |
-      If per-chunk segments collapse to start==end==chunkOffset (a point),
-      diarization time-overlap matching only hits the first overlapping
-      speaker. Multi-speaker chunks lose all but the first speaker's
-      attribution. Fixed 2026-04-17 in MeetingSession.rotateChunk for both
-      mic and system streams.
-    how_to_apply: |
-      When touching MeetingSession chunk accumulation, preserve result.segments
-      with chunkOffset added, not just a single collapsed SpeechSegment.
+  live_coach: |
+    LiveCoachEngine (Swift) watches transcript, debounces proactive turns,
+    wraps content in <transcript_update>/<user_message>, calls LiveCoachClient
+    (URLSession SSE) → muesli-agent sidecar → Mastra Agent → Anthropic/OpenAI.
+    Memory: LibSQL at $APP_SUPPORT/coach.db + coach-vectors.db.
+    Per-profile isolation: resourceId="profile-<uuid>",
+    threadId="<meeting>-profile-<uuid>" (threads belong to one resource in
+    Mastra, so the thread MUST include the profile id).
 
-gotchas:
+sidecar_gotchas:
+  libsql_native_addon:
+    problem: |
+      Bun --compile cannot embed .node native addons. libsql uses
+      `require(`@libsql/${target}`)` which isn't statically resolvable.
+      Without intervention the compiled binary only works when CWD contains
+      a node_modules with libsql (e.g. during bun run, not in /Applications).
+    fix: |
+      1. `bun patch libsql` — patched node_modules/libsql/index.js to
+         `process.dlopen` from `<execDir>/native_modules/@libsql/<target>/index.node`
+         first, falling back to require() for dev.
+      2. Patch checked in at patches/libsql@*.patch (applied by bun install).
+      3. build.sh copies node_modules/@libsql/darwin-arm64 to
+         dist/native_modules/@libsql/darwin-arm64/.
+      4. build_native_app.sh ditto's native_modules into
+         Contents/Resources/ of the .app bundle.
+
+  jit_entitlements:
+    problem: |
+      macOS hardened runtime blocks Bun's JIT compiler with
+      "Ran out of executable memory while allocating N bytes."
+    fix: |
+      Sign muesli-agent (and the .node addon) with
+      scripts/MuesliAgent.entitlements which includes:
+        com.apple.security.cs.allow-jit
+        com.apple.security.cs.allow-unsigned-executable-memory
+        com.apple.security.cs.disable-library-validation
+      build_native_app.sh signs unconditionally (ad-hoc when MUESLI_SKIP_SIGN=1).
+
+  bun_serve_idle_timeout:
+    problem: |
+      Bun.serve default idleTimeout=10s kills long SSE generations mid-stream.
+      AI SDK then retries internally, producing duplicated assistant turns.
+    fix: "src/index.ts sets idleTimeout: 240"
+
+  urlsession_timeout:
+    problem: |
+      URLSession.bytes() default timeoutIntervalForRequest=60s treats quiet
+      periods as idle. Anthropic thinking pauses or Mastra side-calls
+      (generateTitle, working memory update) easily exceed 60s.
+    fix: "LiveCoachClient sets urlReq.timeoutInterval = 300"
+
+  mastra_empty_textstream:
+    problem: |
+      Mastra's Agent.stream().textStream yields only text content. If the
+      model's reply is a working-memory tool call with no accompanying
+      text, textStream is empty → coach bubble renders blank.
+    workaround_applied: |
+      LiveCoachEngine.runTurn() detects clean close with no deltas and
+      swaps the bubble to a systemNotice explaining what happened. To
+      really suppress empty bubbles we'd either:
+        - disable working memory per profile
+        - instruct the model always to emit text alongside memory updates
+        - use stream.fullStream instead of textStream
+
+panel_ux:
+  startup_race: |
+    Sidecar launches async at app start when liveCoach.enabled. Panel show()
+    opens the coach column with a "Coach starting…" placeholder if the
+    sidecar isn't ready yet; upgrades to a live engine once
+    LiveCoachSidecar.waitUntilReady() succeeds (30s timeout).
+
+  profile_picker: |
+    Dropdown in coach header when >1 profile. Switching profile = new
+    engine bound to that profile, which rebuilds panel content.
+    Picker selection lives in sessionActiveProfileID (not persisted).
+
+meeting_invariant:
+  name: "token-level timing preserved through chunks"
+  why: |
+    If per-chunk segments collapse to start==end==chunkOffset (a point),
+    diarization time-overlap matching only hits the first overlapping
+    speaker.
+  how_to_apply: |
+    When touching MeetingSession chunk accumulation, preserve result.segments
+    with chunkOffset added, not just a single collapsed SpeechSegment.
+
+other_gotchas:
   - "CoreML race: system transcription must await mic task (EXC_BAD_ACCESS otherwise)."
   - "Speaker database resets per meeting — no persistent profiles across sessions."
-  - "Batch diarization at meeting end may re-identify speakers already matched during chunks."
+  - "Bun.plugin() at runtime does NOT intercept template-literal dynamic requires from already-bundled code."
+  - "Bun.build() API does not support the `compile` option; must use CLI with --compile."
 
 user_preferences:
   commits: "no Claude signatures, no Co-Authored-By, no sign-offs"
   initials: "SGL"
   github: "sglyon"
+  primary_use_case: "Arete Intelligence sales pitches; also team meetings, exec briefings (via coach profiles)."
+  target_platform: "Apple Silicon only (arm64). No universal binary."
