@@ -6,6 +6,18 @@ public enum MeetingNotesState: String, Codable, Sendable {
     case structuredNotes = "structured_notes"
 }
 
+public enum MeetingTemplateKind: String, Codable, Sendable {
+    case auto
+    case builtin
+    case custom
+}
+
+public enum MeetingRecordingSavePolicy: String, Codable, CaseIterable, Sendable {
+    case never
+    case prompt
+    case always
+}
+
 public struct DictationRecord: Identifiable, Codable, Sendable {
     public let id: Int64
     public let timestamp: String
@@ -36,6 +48,11 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
     public let calendarEventID: String?
     public let micAudioPath: String?
     public let systemAudioPath: String?
+    public let savedRecordingPath: String?
+    public let selectedTemplateID: String?
+    public let selectedTemplateName: String?
+    public let selectedTemplateKind: MeetingTemplateKind?
+    public let selectedTemplatePrompt: String?
 
     public init(
         id: Int64,
@@ -48,7 +65,12 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         folderID: Int64?,
         calendarEventID: String? = nil,
         micAudioPath: String? = nil,
-        systemAudioPath: String? = nil
+        systemAudioPath: String? = nil,
+        savedRecordingPath: String? = nil,
+        selectedTemplateID: String? = nil,
+        selectedTemplateName: String? = nil,
+        selectedTemplateKind: MeetingTemplateKind? = nil,
+        selectedTemplatePrompt: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -61,16 +83,35 @@ public struct MeetingRecord: Identifiable, Codable, Sendable {
         self.calendarEventID = calendarEventID
         self.micAudioPath = micAudioPath
         self.systemAudioPath = systemAudioPath
+        self.savedRecordingPath = savedRecordingPath
+        self.selectedTemplateID = selectedTemplateID
+        self.selectedTemplateName = selectedTemplateName
+        self.selectedTemplateKind = selectedTemplateKind
+        self.selectedTemplatePrompt = selectedTemplatePrompt
     }
 
     public var notesState: MeetingNotesState {
         let trimmed = formattedNotes.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .missing }
         let normalized = trimmed.lowercased()
-        if normalized.contains("## raw transcript") {
+        if normalized == "## raw transcript" || normalized.hasPrefix("## raw transcript\n") {
             return .rawTranscriptFallback
         }
         return .structuredNotes
+    }
+
+    public var appliedTemplateID: String {
+        let trimmed = selectedTemplateID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "auto" : trimmed
+    }
+
+    public var appliedTemplateName: String {
+        let trimmed = selectedTemplateName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Auto" : trimmed
+    }
+
+    public var appliedTemplateKind: MeetingTemplateKind {
+        selectedTemplateKind ?? .auto
     }
 }
 

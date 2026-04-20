@@ -105,6 +105,109 @@ struct TranscriptFormatterTests {
         #expect(lines[1].contains("Others:"))
     }
 
+    @Test("consolidation inserts spacing between same-speaker chunk text")
+    func consolidationPreservesChunkSpacing() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [
+            SpeechSegment(start: 0.0, end: 2.0, text: "This is the first sentence."),
+            SpeechSegment(start: 2.1, end: 4.0, text: "This is the second sentence."),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            meetingStart: meetingStart
+        )
+
+        #expect(result.contains("Others: This is the first sentence. This is the second sentence."))
+    }
+
+    @Test("formatter preserves overlapping sources after reconciliation has happened upstream")
+    func preservesOverlappingSources() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 1.0, end: 2.0, text: "wait hold on"),
+        ]
+        let system = [
+            SpeechSegment(start: 0.8, end: 2.2, text: "can you hear me okay"),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            meetingStart: meetingStart
+        )
+
+        #expect(result.contains("You: wait hold on"))
+        #expect(result.contains("Others: can you hear me okay"))
+    }
+
+    @Test("formatter passes through mic segments without text-based bleed filtering")
+    func passesThoughMicSegmentsWithoutBleedFiltering() {
+        // Bleed detection is now handled upstream by MeetingBleedDetector
+        // (speaker-embedding comparison). The formatter passes all mic segments through.
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 1.0, end: 3.0, text: "can you hear me okay"),
+        ]
+        let system = [
+            SpeechSegment(start: 1.05, end: 3.0, text: "can you hear me okay"),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            meetingStart: meetingStart
+        )
+
+        // Both mic and system segments appear — no text-based filtering
+        #expect(result.contains("You: can you hear me okay"))
+        #expect(result.contains("Others: can you hear me okay"))
+    }
+
+    @Test("drops single-character meeting artifacts after consolidation")
+    func dropsSingleCharacterArtifacts() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let system = [
+            SpeechSegment(start: 0.0, end: 0.15, text: "I"),
+            SpeechSegment(start: 0.16, end: 2.0, text: "mean to be honest this is working"),
+        ]
+        let diarization = [
+            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 0.15),
+            makeDiarSeg(speakerId: "spk_1", start: 0.16, end: 2.0),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: [],
+            systemSegments: system,
+            diarizationSegments: diarization,
+            meetingStart: meetingStart
+        )
+
+        #expect(!result.contains("Speaker 1: I"))
+        #expect(result.contains("Speaker 2: mean to be honest this is working"))
+    }
+
+    @Test("keeps isolated short replies when they are not artifact-like")
+    func keepsIsolatedShortReplies() {
+        let meetingStart = Date(timeIntervalSince1970: 0)
+        let mic = [
+            SpeechSegment(start: 0.0, end: 0.8, text: "No"),
+        ]
+        let system = [
+            SpeechSegment(start: 2.0, end: 4.0, text: "that is a separate point"),
+        ]
+
+        let result = TranscriptFormatter.merge(
+            micSegments: mic,
+            systemSegments: system,
+            meetingStart: meetingStart
+        )
+
+        #expect(result.contains("You: No"))
+        #expect(result.contains("Others: that is a separate point"))
+    }
+
     @Test("single segment not affected by consolidation")
     func singleSegmentConsolidation() {
         let result = TranscriptFormatter.merge(
@@ -163,14 +266,15 @@ struct TranscriptFormatterTests {
         #expect(result.contains("Speaker 2: A speaks second"))
     }
 
-    @Test("diarization with no overlap falls back to Others")
-    func diarizationNoOverlapFallback() {
+    @Test("single-speaker diarization labels all system segments consistently")
+    func singleSpeakerDiarizationFallback() {
         let meetingStart = Date(timeIntervalSince1970: 0)
         let system = [
-            SpeechSegment(start: 100.0, end: 105.0, text: "Orphan segment"),
+            SpeechSegment(start: 0.0, end: 1.0, text: "First chunk"),
+            SpeechSegment(start: 3.0, end: 4.0, text: "Second chunk"),
         ]
         let diarization = [
-            makeDiarSeg(speakerId: "spk_0", start: 0.0, end: 10.0),
+            makeDiarSeg(speakerId: "spk_0", start: 0.2, end: 0.8),
         ]
         let result = TranscriptFormatter.merge(
             micSegments: [],
@@ -178,7 +282,8 @@ struct TranscriptFormatterTests {
             diarizationSegments: diarization,
             meetingStart: meetingStart
         )
-        #expect(result.contains("Others: Orphan segment"))
+        #expect(result.contains("Speaker 1: First chunk Second chunk"))
+        #expect(!result.contains("Others:"))
     }
 
     @Test("nil diarization segments falls back to Others labels")
@@ -395,4 +500,5 @@ struct TranscriptFormatterTests {
             qualityScore: 1.0
         )
     }
+
 }

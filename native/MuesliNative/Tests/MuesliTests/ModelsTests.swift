@@ -23,7 +23,7 @@ struct BackendOptionTests {
 
     @Test("backend field is one of the known backends")
     func knownBackends() {
-        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron"]
+        let known: Set<String> = ["fluidaudio", "whisper", "qwen", "nemotron", "canary", "cohere"]
         for option in BackendOption.all {
             #expect(known.contains(option.backend), "Unknown backend: \(option.backend)")
         }
@@ -60,14 +60,141 @@ struct BackendOptionTests {
         #expect(BackendOption.all.contains(.whisperSmall))
         #expect(BackendOption.all.contains(.whisperMedium))
         #expect(BackendOption.all.contains(.whisperLargeTurbo))
-        #expect(BackendOption.all.count == 7)
+        #expect(BackendOption.all.contains(.qwen3Asr))
+        #expect(BackendOption.all.contains(.canaryQwen))
+        #expect(BackendOption.all.contains(.cohereTranscribe))
+        #expect(BackendOption.all.contains(.nemotronStreaming))
     }
 
-    @Test("Whisper models reference ggml format")
-    func whisperGgmlModels() {
-        #expect(BackendOption.whisperSmall.model.hasPrefix("ggml-"))
-        #expect(BackendOption.whisperMedium.model.hasPrefix("ggml-"))
-        #expect(BackendOption.whisperLargeTurbo.model.hasPrefix("ggml-"))
+    @Test("Cohere uses cohere backend")
+    func cohereBackend() {
+        #expect(BackendOption.cohereTranscribe.backend == "cohere")
+        #expect(BackendOption.cohereTranscribe.model.contains("cohere"))
+    }
+
+    @Test("Cohere is not in experimental list")
+    func cohereNotExperimental() {
+        #expect(!BackendOption.experimental.contains(.cohereTranscribe))
+    }
+
+    @Test("Whisper models use WhisperKit CoreML identifiers")
+    func whisperKitModels() {
+        // WhisperKit models use short variant names, not ggml- prefixed binaries
+        #expect(BackendOption.whisperSmall.model == "small.en")
+        #expect(BackendOption.whisperMedium.model == "medium.en")
+        #expect(BackendOption.whisperLargeTurbo.model.contains("large"))
+    }
+}
+
+@Suite("PostProcessorOption")
+struct PostProcessorOptionTests {
+
+    @Test("all options have unique ids")
+    func uniqueIDs() {
+        let ids = PostProcessorOption.all.map(\.id)
+        #expect(Set(ids).count == ids.count, "Duplicate id in PostProcessorOption.all")
+    }
+
+    @Test("all options have unique filenames")
+    func uniqueFilenames() {
+        let filenames = PostProcessorOption.all.map(\.filename)
+        #expect(Set(filenames).count == filenames.count, "Duplicate filename in PostProcessorOption.all")
+    }
+
+    @Test("all options use HTTPS GGUF downloads")
+    func validDownloadMetadata() {
+        for option in PostProcessorOption.all {
+            #expect(option.downloadURL.scheme == "https", "Non-HTTPS download URL for \(option.id)")
+            #expect(option.filename.lowercased().hasSuffix(".gguf"), "Non-GGUF filename for \(option.id)")
+            #expect(!option.label.isEmpty, "Empty label for \(option.id)")
+            #expect(!option.description.isEmpty, "Empty description for \(option.id)")
+            #expect(!option.sizeLabel.isEmpty, "Empty size label for \(option.id)")
+        }
+    }
+
+    @Test("default option is first and matches config default")
+    func defaultOption() {
+        #expect(PostProcessorOption.all.first == PostProcessorOption.defaultOption)
+        #expect(AppConfig().activePostProcessorId == PostProcessorOption.defaultOption.id)
+    }
+
+    @Test("unknown ids resolve to default")
+    func unknownIDResolvesToDefault() {
+        #expect(PostProcessorOption.resolve(id: "missing") == PostProcessorOption.defaultOption)
+    }
+
+    @Test("resolveDownloaded prefers selected downloaded option")
+    func resolveDownloadedPrefersSelected() {
+        let downloadedIDs: Set<String> = [
+            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.qwen35_0_8b.id,
+        ]
+        #expect(PostProcessorOption.resolveDownloaded(
+            id: PostProcessorOption.qwen35_0_8b.id,
+            downloadedIDs: downloadedIDs
+        ) == PostProcessorOption.qwen35_0_8b)
+    }
+
+    @Test("resolveDownloaded falls back to first downloaded option")
+    func resolveDownloadedFallsBack() {
+        let downloadedIDs: Set<String> = [PostProcessorOption.finetunedV2.id]
+        #expect(PostProcessorOption.resolveDownloaded(
+            id: PostProcessorOption.finetunedV3.id,
+            downloadedIDs: downloadedIDs
+        ) == PostProcessorOption.finetunedV2)
+    }
+
+    @Test("runtimeOption prefers selected downloaded option")
+    func runtimeOptionPrefersSelectedDownloadedOption() {
+        let downloadedIDs: Set<String> = [
+            PostProcessorOption.finetunedV2.id,
+            PostProcessorOption.qwen35_0_8b.id,
+        ]
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.qwen35_0_8b.id,
+            downloadedIDs: downloadedIDs,
+            hasDevOverride: false
+        ) == PostProcessorOption.qwen35_0_8b)
+    }
+
+    @Test("runtimeOption falls back to first downloaded option")
+    func runtimeOptionFallsBackToFirstDownloadedOption() {
+        let downloadedIDs: Set<String> = [PostProcessorOption.finetunedV2.id]
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.finetunedV3.id,
+            downloadedIDs: downloadedIDs,
+            hasDevOverride: false
+        ) == PostProcessorOption.finetunedV2)
+    }
+
+    @Test("runtimeOption accepts configured option with dev override")
+    func runtimeOptionAcceptsConfiguredOptionWithDevOverride() {
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.finetunedV3.id,
+            downloadedIDs: [],
+            hasDevOverride: true
+        ) == PostProcessorOption.finetunedV3)
+    }
+
+    @Test("runtimeOption returns nil without a download or dev override")
+    func runtimeOptionReturnsNilWithoutDownloadOrDevOverride() {
+        #expect(PostProcessorOption.runtimeOption(
+            id: PostProcessorOption.finetunedV3.id,
+            downloadedIDs: [],
+            hasDevOverride: false
+        ) == nil)
+    }
+
+    @Test("firstDownloaded respects deletion exclusion")
+    func firstDownloadedExcludingDeleted() {
+        let downloadedIDs: Set<String> = [
+            PostProcessorOption.finetunedV3.id,
+            PostProcessorOption.finetunedV2.id,
+        ]
+        #expect(PostProcessorOption.firstDownloaded(
+            excluding: PostProcessorOption.finetunedV3.id,
+            downloadedIDs: downloadedIDs
+        ) == PostProcessorOption.finetunedV2)
     }
 }
 
@@ -119,13 +246,19 @@ struct AppConfigTests {
         let config = AppConfig()
         #expect(config.sttBackend == BackendOption.whisper.backend)
         #expect(config.sttModel == BackendOption.whisper.model)
+        #expect(config.meetingTranscriptionBackend == BackendOption.whisper.backend)
+        #expect(config.meetingTranscriptionModel == BackendOption.whisper.model)
         #expect(config.meetingSummaryBackend == "openai")
+        #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
+        #expect(config.meetingRecordingSavePolicy == .never)
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.openRouterAPIKey.isEmpty)
         #expect(config.dictationHotkey == .default)
         #expect(config.showFloatingIndicator == true)
+        #expect(config.indicatorAnchor == .midTrailing)
         #expect(config.hasCompletedOnboarding == false)
         #expect(config.userName.isEmpty)
+        #expect(config.customMeetingTemplates.isEmpty)
     }
 
     @Test("JSON encode/decode round-trip")
@@ -134,6 +267,16 @@ struct AppConfigTests {
         config.openAIAPIKey = "sk-test-key-123"
         config.userName = "Test User"
         config.hasCompletedOnboarding = true
+        config.defaultMeetingTemplateID = "weekly-team-meeting"
+        config.meetingRecordingSavePolicy = .always
+        config.customMeetingTemplates = [
+            CustomMeetingTemplate(
+                id: "tmpl_123",
+                name: "Customer Follow-Up",
+                prompt: "## Summary",
+                icon: "dollarsign.circle"
+            )
+        ]
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
@@ -141,6 +284,13 @@ struct AppConfigTests {
         #expect(decoded.openAIAPIKey == "sk-test-key-123")
         #expect(decoded.userName == "Test User")
         #expect(decoded.hasCompletedOnboarding == true)
+        #expect(decoded.defaultMeetingTemplateID == "weekly-team-meeting")
+        #expect(decoded.meetingRecordingSavePolicy == .always)
+        #expect(decoded.customMeetingTemplates.count == 1)
+        #expect(decoded.customMeetingTemplates.first?.name == "Customer Follow-Up")
+        #expect(decoded.customMeetingTemplates.first?.icon == "dollarsign.circle")
+        #expect(decoded.meetingTranscriptionBackend == config.meetingTranscriptionBackend)
+        #expect(decoded.indicatorAnchor == config.indicatorAnchor)
     }
 
     @Test("JSON coding keys use snake_case")
@@ -151,8 +301,14 @@ struct AppConfigTests {
 
         #expect(json["stt_backend"] != nil)
         #expect(json["stt_model"] != nil)
+        #expect(json["meeting_transcription_backend"] != nil)
+        #expect(json["meeting_transcription_model"] != nil)
+        #expect(json["indicator_anchor"] != nil)
         #expect(json["has_completed_onboarding"] != nil)
         #expect(json["user_name"] != nil)
+        #expect(json["default_meeting_template_id"] != nil)
+        #expect(json["meeting_recording_save_policy"] != nil)
+        #expect(json["custom_meeting_templates"] != nil)
     }
 
     @Test("decodes with missing fields using defaults")
@@ -164,6 +320,235 @@ struct AppConfigTests {
         #expect(config.openAIAPIKey.isEmpty)
         #expect(config.showFloatingIndicator == true)
         #expect(config.hasCompletedOnboarding == false)
+        #expect(config.defaultMeetingTemplateID == MeetingTemplates.autoID)
+        #expect(config.meetingRecordingSavePolicy == .never)
+        #expect(config.customMeetingTemplates.isEmpty)
+    }
+
+    @Test("meeting transcription falls back to dictation model when missing")
+    func meetingTranscriptionFallsBackToDictationModel() throws {
+        let json = """
+        {
+          "stt_backend": "whisper",
+          "stt_model": "ggml-medium.en"
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.meetingTranscriptionBackend == "whisper")
+        #expect(config.meetingTranscriptionModel == "ggml-medium.en")
+    }
+
+    @Test("indicator anchor falls back to custom when legacy origin exists")
+    func indicatorAnchorFallsBackToCustomForLegacyOrigin() throws {
+        let json = """
+        {
+          "indicator_origin": [640, 320]
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+
+        #expect(config.indicatorAnchor == .custom)
+        #expect(config.indicatorOrigin?.x == 640)
+        #expect(config.indicatorOrigin?.y == 320)
+    }
+
+    @Test("custom words decode missing threshold with default")
+    func customWordsDecodeMissingThresholdWithDefault() throws {
+        let json = """
+        {
+          "custom_words": [
+            {
+              "id": "67A2A4E9-E707-4A65-B690-124AFA4F0C18",
+              "word": "muesli",
+              "replacement": "Muesli"
+            }
+          ]
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(config.customWords.count == 1)
+        #expect(config.customWords[0].matchingThreshold == 0.85)
+    }
+
+    @Test("custom words clamp thresholds into the supported UI range")
+    func customWordsClampThresholdsIntoSupportedRange() throws {
+        let json = """
+        {
+          "custom_words": [
+            {
+              "word": "aggressive",
+              "matching_threshold": 0.1
+            },
+            {
+              "word": "strict",
+              "matching_threshold": 1.4
+            }
+          ]
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(config.customWords.count == 2)
+        #expect(config.customWords[0].matchingThreshold == 0.70)
+        #expect(config.customWords[1].matchingThreshold == 0.95)
+    }
+
+    @Test("custom templates decode missing icon with fallback")
+    func customTemplateMissingIconUsesFallback() throws {
+        let json = """
+        {
+          "custom_meeting_templates": [
+            {
+              "id": "tmpl_123",
+              "name": "Customer Follow-Up",
+              "prompt": "## Summary"
+            }
+          ]
+        }
+        """
+        let data = json.data(using: .utf8)!
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        #expect(config.customMeetingTemplates.count == 1)
+        #expect(config.customMeetingTemplates.first?.icon == MeetingTemplates.customIconFallback)
+    }
+
+    @Test("custom templates normalize invalid icons")
+    func customTemplateInvalidIconUsesFallback() {
+        let template = CustomMeetingTemplate(
+            id: "tmpl_invalid",
+            name: "Test",
+            prompt: "Prompt",
+            icon: "invalid.icon"
+        )
+
+        #expect(template.icon == MeetingTemplates.customIconFallback)
+        #expect(MeetingTemplates.customDefinition(from: template).icon == MeetingTemplates.customIconFallback)
+    }
+}
+
+@Suite("HotkeyMonitor")
+struct HotkeyMonitorTests {
+
+    @Test("escape still cancels active hold dictation immediately")
+    func escapeCancelsActiveHoldDictation() async throws {
+        let monitor = HotkeyMonitor(
+            prepareDelay: 0.01,
+            startDelay: 0.02,
+            doubleTapWindow: 0.03
+        )
+        var cancelCount = 0
+        monitor.onCancel = {
+            cancelCount += 1
+        }
+
+        monitor.setHoldRecordingActiveForTests()
+        monitor.handleKeyDown(keyCode: 53)
+
+        #expect(cancelCount == 1)
+    }
+}
+
+@Suite("MeetingResummarizationPolicy")
+struct MeetingResummarizationPolicyTests {
+
+    @Test("resummarize preserves the existing meeting title")
+    func preservesExistingMeetingTitle() {
+        let meeting = MeetingRecord(
+            id: 42,
+            title: "Customer pilot follow-up",
+            startTime: "2026-03-24T10:00:00Z",
+            durationSeconds: 1800,
+            rawTranscript: "Transcript",
+            formattedNotes: "## Notes",
+            wordCount: 123,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            selectedTemplateID: MeetingTemplates.autoID,
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: ""
+        )
+
+        #expect(
+            MeetingResummarizationPolicy.plan(for: meeting) ==
+            MeetingResummarizationPlan(
+                promptTitle: "Customer pilot follow-up",
+                persistedTitle: "Customer pilot follow-up"
+            )
+        )
+    }
+
+    @Test("blank titles fall back to Meeting in prompts without overwriting storage")
+    func blankMeetingTitlesFallback() {
+        let meeting = MeetingRecord(
+            id: 43,
+            title: "   ",
+            startTime: "2026-03-24T10:00:00Z",
+            durationSeconds: 1800,
+            rawTranscript: "Transcript",
+            formattedNotes: "## Notes",
+            wordCount: 123,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            selectedTemplateID: MeetingTemplates.autoID,
+            selectedTemplateName: "Auto",
+            selectedTemplateKind: .auto,
+            selectedTemplatePrompt: ""
+        )
+
+        #expect(
+            MeetingResummarizationPolicy.plan(for: meeting) ==
+            MeetingResummarizationPlan(
+                promptTitle: "Meeting",
+                persistedTitle: "   "
+            )
+        )
+    }
+}
+
+@Suite("Meeting template resolution")
+struct MeetingTemplateResolutionTests {
+
+    @Test("exact resolution returns nil for deleted custom templates")
+    func exactResolutionReturnsNilForDeletedCustomTemplates() {
+        let customTemplates = [
+            CustomMeetingTemplate(
+                id: "tmpl_existing",
+                name: "Existing Template",
+                prompt: "## Summary",
+                icon: "person.2"
+            )
+        ]
+
+        #expect(
+            MeetingTemplates.resolveExactDefinition(
+                id: "tmpl_deleted",
+                customTemplates: customTemplates
+            ) == nil
+        )
+    }
+
+    @Test("exact resolution still supports auto and built-in templates")
+    func exactResolutionSupportsDefaultTemplates() {
+        let builtIn = MeetingTemplates.builtIns.first!
+
+        #expect(
+            MeetingTemplates.resolveExactDefinition(
+                id: MeetingTemplates.autoID,
+                customTemplates: []
+            )?.id == MeetingTemplates.autoID
+        )
+        #expect(
+            MeetingTemplates.resolveExactDefinition(
+                id: builtIn.id,
+                customTemplates: []
+            )?.id == builtIn.id
+        )
     }
 }
 
@@ -241,5 +626,71 @@ struct HotkeyConfigTests {
     func unknownKeyCode() {
         #expect(HotkeyConfig.label(for: 0) == nil)
         #expect(HotkeyConfig.label(for: 100) == nil)
+    }
+}
+
+@Suite("AppConfig — appearance fields")
+struct AppConfigAppearanceTests {
+
+    @Test("soundEnabled defaults to true")
+    func soundEnabledDefault() {
+        let config = AppConfig()
+        #expect(config.soundEnabled == true)
+    }
+
+    @Test("recordingColorHex defaults to Catppuccin Mocha base")
+    func recordingColorHexDefault() {
+        let config = AppConfig()
+        #expect(config.recordingColorHex == "1e1e2e")
+    }
+
+    @Test("soundEnabled round-trips through JSON")
+    func soundEnabledRoundTrip() throws {
+        var config = AppConfig()
+        config.soundEnabled = false
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.soundEnabled == false)
+    }
+
+    @Test("recordingColorHex round-trips through JSON")
+    func recordingColorHexRoundTrip() throws {
+        var config = AppConfig()
+        config.recordingColorHex = "303446"
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        #expect(decoded.recordingColorHex == "303446")
+    }
+
+    @Test("unknown JSON keys are ignored — soundEnabled falls back to default")
+    func soundEnabledFallsBackOnMissingKey() throws {
+        let json = Data("{}".utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(decoded.soundEnabled == true)
+    }
+
+    @Test("unknown JSON keys are ignored — recordingColorHex falls back to default")
+    func recordingColorHexFallsBackOnMissingKey() throws {
+        let json = Data("{}".utf8)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: json)
+        #expect(decoded.recordingColorHex == "1e1e2e")
+    }
+
+    @Test("soundEnabled CodingKey is sound_enabled")
+    func soundEnabledCodingKey() throws {
+        var config = AppConfig()
+        config.soundEnabled = false
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["sound_enabled"] as? Bool == false)
+    }
+
+    @Test("recordingColorHex CodingKey is recording_color_hex")
+    func recordingColorHexCodingKey() throws {
+        var config = AppConfig()
+        config.recordingColorHex = "eff1f5"
+        let data = try JSONEncoder().encode(config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(json?["recording_color_hex"] as? String == "eff1f5")
     }
 }

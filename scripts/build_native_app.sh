@@ -74,17 +74,32 @@ chmod +x "$STAGED_APP_DIR/Contents/MacOS/$APP_EXECUTABLE_NAME"
 cp "$CLI_BIN" "$STAGED_APP_DIR/Contents/MacOS/$CLI_BINARY"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/$CLI_BINARY"
 
-# Bundle Sparkle framework (rpath is @loader_path, so it goes next to the binary)
-SPARKLE_FW="$BIN_DIR/Sparkle.framework"
-if [[ -d "$SPARKLE_FW" ]]; then
-  ditto "$SPARKLE_FW" "$STAGED_APP_DIR/Contents/MacOS/Sparkle.framework"
-fi
+# Bundle SwiftPM-linked frameworks (rpath is @loader_path, so they go next to the binary)
+for framework in "$BIN_DIR"/*.framework; do
+  [[ -d "$framework" ]] || continue
+  ditto "$framework" "$STAGED_APP_DIR/Contents/MacOS/$(basename "$framework")"
+done
+
+# Bundle SPM resource bundles (CoreML models, privacy manifests, etc.)
+for bundle in "$BIN_DIR"/*.bundle; do
+  [[ -d "$bundle" ]] || continue
+  ditto "$bundle" "$STAGED_APP_DIR/Contents/Resources/$(basename "$bundle")"
+done
 
 # Bundle assets
 cp "$ROOT/assets/menu_m_template.png" "$STAGED_APP_DIR/Contents/Resources/menu_m_template.png"
 cp "$ROOT/assets/muesli.icns" "$STAGED_APP_DIR/Contents/Resources/muesli.icns"
+cp "$ROOT/assets/zoom-app.png" "$STAGED_APP_DIR/Contents/Resources/zoom-app.png"
+cp "$ROOT/assets/Google_Meet_icon_(2020).svg.png" "$STAGED_APP_DIR/Contents/Resources/google-meet.png"
+cp "$ROOT/assets/Nvidia_logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/nvidia-logo.png"
+cp "$ROOT/assets/OpenAI_Logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/openai-logo.png"
+cp "$ROOT/assets/cohere.png" "$STAGED_APP_DIR/Contents/Resources/cohere-logo.png"
+cp "$ROOT/assets/Qwen_logo.svg.png" "$STAGED_APP_DIR/Contents/Resources/qwen-logo.png"
 if [[ -d "$ROOT/assets/fonts" ]]; then
   ditto "$ROOT/assets/fonts" "$STAGED_APP_DIR/Contents/Resources/fonts"
+fi
+if [[ -d "$ROOT/assets/audio" ]]; then
+  ditto "$ROOT/assets/audio" "$STAGED_APP_DIR/Contents/Resources/audio"
 fi
 
 # Bundle the Live Coach sidecar (Bun-compiled single binary). Skip gracefully
@@ -122,9 +137,9 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleVersion</key>
-  <string>0.5.5</string>
+  <string>0.6.0</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.5</string>
+  <string>0.6.0</string>
   <key>CFBundleExecutable</key>
   <string>$APP_EXECUTABLE_NAME</string>
   <key>CFBundlePackageType</key>
@@ -139,12 +154,14 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
   <string>$APP_DISPLAY_NAME records microphone audio for dictation.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>$APP_DISPLAY_NAME monitors keyboard events to trigger push-to-talk dictation.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>$APP_DISPLAY_NAME captures system audio from other applications during meeting recordings.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>$APP_DISPLAY_NAME captures system audio during meeting recordings.</string>
+  <string>$APP_DISPLAY_NAME captures screen content for meeting context.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>$APP_DISPLAY_NAME reads calendar events to help with meeting recordings.</string>
   <key>SUFeedURL</key>
-  <string>https://pHequals7.github.io/muesli/appcast.xml</string>
+  <string>${MUESLI_SPARKLE_FEED_URL:-https://pHequals7.github.io/muesli/appcast.xml}</string>
   <key>SUPublicEDKey</key>
   <string>${MUESLI_SPARKLE_EDKEY:-ok9CQBJ3f0MJ2GXuGBubc6VyeWyb5exmqP2b9DceqH4=}</string>
   <key>SUEnableAutomaticChecks</key>
@@ -196,31 +213,29 @@ fi
 
 if [[ "$SKIP_SIGN" != "1" ]]; then
 
-  # Sign all nested binaries inside Sparkle framework (required for notarization)
-  if [[ -d "$APP_DIR/Contents/MacOS/Sparkle.framework" ]]; then
-    # Deep-sign every executable inside Sparkle (Updater.app, Autoupdate, XPC services)
-    find "$APP_DIR/Contents/MacOS/Sparkle.framework" -type f -perm +111 | while read -r binary; do
-      # Skip non-Mach-O files (e.g., shell scripts, plists)
-      if file "$binary" | grep -q "Mach-O"; then
+  # Sign all bundled frameworks, including nested Sparkle executables.
+  find "$APP_DIR/Contents/MacOS" -maxdepth 1 -name "*.framework" -type d | while read -r framework; do
+    if [[ "$(basename "$framework")" == "Sparkle.framework" ]]; then
+      find "$framework" -type f -perm +111 | while read -r binary; do
+        if file "$binary" | grep -q "Mach-O"; then
+          codesign --force --options runtime --timestamp \
+            --sign "$SIGN_IDENTITY" "$binary"
+        fi
+      done
+      find "$framework" -name "*.xpc" -type d | while read -r xpc; do
         codesign --force --options runtime --timestamp \
-          --sign "$SIGN_IDENTITY" "$binary"
-      fi
-    done
-    # Sign the XPC bundles
-    find "$APP_DIR/Contents/MacOS/Sparkle.framework" -name "*.xpc" -type d | while read -r xpc; do
-      codesign --force --options runtime --timestamp \
-        --sign "$SIGN_IDENTITY" "$xpc"
-    done
-    # Sign the Updater.app bundle
-    find "$APP_DIR/Contents/MacOS/Sparkle.framework" -name "*.app" -type d | while read -r app; do
-      codesign --force --options runtime --timestamp \
-        --sign "$SIGN_IDENTITY" "$app"
-    done
-    # Sign the framework bundle itself
+          --sign "$SIGN_IDENTITY" "$xpc"
+      done
+      find "$framework" -name "*.app" -type d | while read -r app; do
+        codesign --force --options runtime --timestamp \
+          --sign "$SIGN_IDENTITY" "$app"
+      done
+    fi
+
     codesign --force --options runtime --timestamp \
       --sign "$SIGN_IDENTITY" \
-      "$APP_DIR/Contents/MacOS/Sparkle.framework"
-  fi
+      "$framework"
+  done
 
   codesign --force --options runtime --timestamp \
     --sign "$SIGN_IDENTITY" \

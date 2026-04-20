@@ -5,13 +5,13 @@ import os
 
 final class MeetingChunkCollector {
     private struct State {
-        var tasks: [Task<SpeechSegment?, Never>] = []
+        var tasks: [Task<[SpeechSegment], Never>] = []
         var isClosed = false
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
 
-    func add(_ task: Task<SpeechSegment?, Never>) -> Bool {
+    func add(_ task: Task<[SpeechSegment], Never>) -> Bool {
         lock.withLock { state in
             guard !state.isClosed else { return false }
             state.tasks.append(task)
@@ -29,9 +29,7 @@ final class MeetingChunkCollector {
 
         var segments: [SpeechSegment] = []
         for task in tasksToAwait {
-            if let segment = await task.value {
-                segments.append(segment)
-            }
+            segments.append(contentsOf: await task.value)
         }
 
         return segments.sorted { lhs, rhs in
@@ -62,27 +60,56 @@ struct MeetingSessionResult {
     let durationSeconds: Double
     let rawTranscript: String
     let formattedNotes: String
-    let micAudioPath: String?
-    let systemAudioPath: String?
+    let retainedRecordingURL: URL?
+    let retainedRecordingError: Error?
+    let systemRecordingURL: URL?
+    let templateSnapshot: MeetingTemplateSnapshot
+}
+
+enum MeetingProcessingStage {
+    case transcribingAudio
+    case cleaningAudio
+    case generatingTitle
+    case summarizingNotes
+}
+
+private enum MeetingTranscriptRecoveryResult {
+    case none
+    case append([SpeechSegment])
+    case replace([SpeechSegment])
 }
 
 final class MeetingSession {
+    private static let logger = Logger(subsystem: "com.muesli.native", category: "MeetingSession")
+
     private let title: String
     private let calendarEventID: String?
     private let backend: BackendOption
     private let runtime: RuntimePaths
     private let config: AppConfig
     private let transcriptionCoordinator: TranscriptionCoordinator
-    private let systemAudioRecorder = SystemAudioRecorder()
+    private let systemAudioRecorder: SystemAudioCapturing
+    private let fullSessionMicRecorder = MicrophoneRecorder()
+    private let neuralAec = MeetingNeuralAec()
 
     /// Streaming mic recorder with real-time buffer access (AVAudioEngine)
     private var streamingMicRecorder = StreamingMicRecorder()
+    private var rawMicChunkRecorder: PCMChunkRecorder?
+    private var retainedRecordingWriter: MeetingRecordingWriter?
+    private var retainedRecordingWriterError: Error?
     /// VAD controller for speech-boundary chunk rotation
     private var vadController: StreamingVadController?
+    private var systemVadController: StreamingVadController?
     private let micChunkCollector = MeetingChunkCollector()
     private let systemChunkCollector = MeetingChunkCollector()
-    /// Track chunk start times for timestamp offsets
-    private var currentChunkStartTime: Date?
+    private let micChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
+    private let systemChunkHealthTracker = MeetingTranscriptChunkHealthTracker()
+    private let chunkRotationQueue = DispatchQueue(label: "MuesliNative.MeetingSession.chunkRotation")
+    private var chunkTimingTracker = MeetingChunkTimingTracker()
+    private var systemChunkTimingTracker = MeetingChunkTimingTracker()
+    private var systemChunkRecorder: PCMChunkRecorder?
+    var onProgress: ((MeetingProcessingStage) -> Void)?
+    private let screenContextCollector = MeetingScreenContextCollector()
 
     // MARK: - Incremental transcript access (for mid-session clipboard copy)
 
@@ -158,15 +185,10 @@ final class MeetingSession {
         self.runtime = runtime
         self.config = config
         self.transcriptionCoordinator = transcriptionCoordinator
-    }
-
-    private var serializedCustomWords: [[String: Any]] {
-        config.customWords.map { word in
-            var dict: [String: Any] = ["word": word.word]
-            if let replacement = word.replacement {
-                dict["replacement"] = replacement
-            }
-            return dict
+        if config.useCoreAudioTap {
+            self.systemAudioRecorder = CoreAudioSystemRecorder()
+        } else {
+            self.systemAudioRecorder = SystemAudioRecorder()
         }
     }
 
@@ -174,42 +196,93 @@ final class MeetingSession {
         // Reset speaker database so previous meetings don't contaminate speaker assignments
         await transcriptionCoordinator.resetSpeakerDatabase()
 
-        try streamingMicRecorder.prepare()
-        try streamingMicRecorder.start()
-        try await systemAudioRecorder.start()
+        let vadManager = await transcriptionCoordinator.getVadManager()
         let now = Date()
-        startTime = now
-        currentChunkStartTime = now
-        isRecording = true
 
-        // Set up VAD-driven chunk rotation
-        Task { [weak self] in
-            guard let self else { return }
-            if let vadManager = await self.transcriptionCoordinator.getVadManager() {
-                let controller = StreamingVadController(vadManager: vadManager)
-                controller.onChunkBoundary = { [weak self] in
-                    self?.rotateChunk()
-                }
-                controller.start()
-                self.vadController = controller
+        // AEC must be loaded before audio pipeline starts (streaming mode)
+        await neuralAec.preload()
 
-                // Wire mic audio to VAD
-                self.streamingMicRecorder.onAudioBuffer = { [weak controller] samples in
-                    controller?.processAudio(samples)
-                }
-                fputs("[meeting] started with VAD-driven chunk rotation\n", stderr)
-            } else {
-                fputs("[meeting] VAD not available, using max-duration fallback only\n", stderr)
+        chunkRotationQueue.sync {
+            startTime = now
+            chunkTimingTracker.start()
+            systemChunkTimingTracker.start()
+            isRecording = true
+        }
+
+        do {
+            try prepareRealtimeAudioPipeline(vadManager: vadManager)
+            try fullSessionMicRecorder.prepare()
+            try streamingMicRecorder.prepare()
+            setupRetainedRecordingWriterIfNeeded()
+            try fullSessionMicRecorder.start()
+            try streamingMicRecorder.start()
+            try await systemAudioRecorder.start()
+        } catch {
+            vadController?.stop()
+            vadController = nil
+            systemVadController?.stop()
+            systemVadController = nil
+            streamingMicRecorder.onAudioBuffer = nil
+            streamingMicRecorder.onPCMSamples = nil
+            systemAudioRecorder.onPCMSamples = nil
+            fullSessionMicRecorder.cancel()
+            retainedRecordingWriter?.cancel()
+            retainedRecordingWriter = nil
+            rawMicChunkRecorder?.cancel()
+            rawMicChunkRecorder = nil
+            systemChunkRecorder?.cancel()
+            systemChunkRecorder = nil
+            chunkRotationQueue.sync {
+                isRecording = false
+                startTime = nil
+                chunkTimingTracker.discard()
+                systemChunkTimingTracker.discard()
             }
+            streamingMicRecorder.cancel()
+            if let url = systemAudioRecorder.stop() {
+                try? FileManager.default.removeItem(at: url)
+            }
+            systemChunkCollector.cancelAll()
+            throw error
+        }
+        if vadController != nil {
+            fputs("[meeting] started with VAD-driven chunk rotation\n", stderr)
+        } else {
+            fputs("[meeting] VAD not available, using max-duration fallback only\n", stderr)
+        }
+        if config.enableScreenContext {
+            // OCR screenshots are safe when using CoreAudio tap (no SCStream conflict)
+            await screenContextCollector.startPeriodicCapture(useOCR: config.useCoreAudioTap)
         }
     }
 
     /// Abandon the recording — stop everything, delete temp files, don't transcribe.
     func discard() {
-        isRecording = false
+        Task { await screenContextCollector.stopAndDrain() }
+        let (rawRecorder, systemRecorder) = chunkRotationQueue.sync { () -> (PCMChunkRecorder?, PCMChunkRecorder?) in
+            isRecording = false
+            chunkTimingTracker.discard()
+            systemChunkTimingTracker.discard()
+            let rawRecorder = rawMicChunkRecorder
+            let systemRecorder = systemChunkRecorder
+            rawMicChunkRecorder = nil
+            systemChunkRecorder = nil
+            return (rawRecorder, systemRecorder)
+        }
         vadController?.stop()
         vadController = nil
+        systemVadController?.stop()
+        systemVadController = nil
+        retainedRecordingWriter?.cancel()
+        retainedRecordingWriter = nil
+        retainedRecordingWriterError = nil
+        rawRecorder?.cancel()
+        systemRecorder?.cancel()
+        fullSessionMicRecorder.cancel()
+        streamingMicRecorder.onAudioBuffer = nil
+        streamingMicRecorder.onPCMSamples = nil
         streamingMicRecorder.cancel()
+        systemAudioRecorder.onPCMSamples = nil
         if let url = systemAudioRecorder.stop() {
             try? FileManager.default.removeItem(at: url)
         }
@@ -219,44 +292,90 @@ final class MeetingSession {
     }
 
     func stop() async throws -> MeetingSessionResult {
-        isRecording = false
-        let meetingStart = self.startTime ?? Date()
+        onProgress?(.transcribingAudio)
         let endTime = Date()
         var micSegments: [SpeechSegment] = []
+        var systemSegments: [SpeechSegment] = []
 
         // Stop VAD controller
         vadController?.stop()
         vadController = nil
+        systemVadController?.stop()
+        systemVadController = nil
+        streamingMicRecorder.onAudioBuffer = nil
+        streamingMicRecorder.onPCMSamples = nil
+        systemAudioRecorder.onPCMSamples = nil
+        let (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL) = chunkRotationQueue.sync { () -> (Date, MeetingChunkTimingSnapshot?, URL?, MeetingChunkTimingSnapshot?, URL?) in
+            isRecording = false
 
-        // Stop mic and get last chunk
-        let lastMicURL = streamingMicRecorder.stop()
-        let lastChunkStart = currentChunkStartTime ?? meetingStart
+            // Flush partial AEC frame before stopping chunk recorder
+            let flushed = self.neuralAec.flushStreamingMic()
+            if !flushed.isEmpty {
+                let flushedInt16 = flushed.map { sample -> Int16 in
+                    Int16(max(-1.0, min(1.0, sample)) * 32767)
+                }
+                self.rawMicChunkRecorder?.append(flushedInt16)
+            }
+
+            let meetingStart = self.startTime ?? Date()
+            let lastRawMicURL = rawMicChunkRecorder?.stop()
+            let lastSystemChunkURL = systemChunkRecorder?.stop()
+            rawMicChunkRecorder = nil
+            systemChunkRecorder = nil
+            let lastChunkTiming = chunkTimingTracker.finish()
+            let lastSystemChunkTiming = systemChunkTimingTracker.finish()
+            return (meetingStart, lastChunkTiming, lastRawMicURL, lastSystemChunkTiming, lastSystemChunkURL)
+        }
+        let rawStreamingMicURL = streamingMicRecorder.stop()
+        let fullSessionMicURL = fullSessionMicRecorder.stop()
+        let retainedRecordingURL = retainedRecordingWriter?.stop()
+        retainedRecordingWriter = nil
+        defer {
+            if let rawStreamingMicURL {
+                try? FileManager.default.removeItem(at: rawStreamingMicURL)
+            }
+            if let fullSessionMicURL {
+                try? FileManager.default.removeItem(at: fullSessionMicURL)
+            }
+        }
 
         // Stop system audio
         let systemAudioURL = systemAudioRecorder.stop()
 
         // Transcribe last mic chunk
-        if let lastMicURL {
-            let chunkOffset = lastChunkStart.timeIntervalSince(meetingStart)
-            fputs("[meeting] transcribing final mic chunk (offset=\(String(format: "%.0f", chunkOffset))s)\n", stderr)
+        let finalMicSegments = await transcribeMicChunk(
+            rawURL: lastRawMicURL,
+            chunkTiming: lastChunkTiming,
+            isFinalChunk: true
+        )
+        micSegments.append(contentsOf: finalMicSegments)
+
+        if let lastSystemChunkURL {
+            let chunkOffset = lastSystemChunkTiming?.startTimeSeconds ?? 0
+            let chunkDuration = lastSystemChunkTiming?.durationSeconds ?? 0
+            fputs("[meeting] transcribing final system chunk (offset=\(String(format: "%.0f", chunkOffset))s)\n", stderr)
             do {
-                let result = try await transcriptionCoordinator.transcribeMeetingChunk(at: lastMicURL, backend: backend, customWords: serializedCustomWords)
-                if !result.text.isEmpty {
-                    micSegments.append(SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text))
+                let result = try await transcriptionCoordinator.transcribeMeetingChunk(at: lastSystemChunkURL, backend: backend)
+                let normalizedSegments = normalizeSystemTranscription(
+                    result: result,
+                    startTime: chunkOffset,
+                    endTime: chunkOffset + max(chunkDuration, 0.1)
+                )
+                if normalizedSegments.isEmpty {
+                    systemChunkHealthTracker.noteEmptyChunk()
+                } else {
+                    systemChunkHealthTracker.noteSuccessfulChunk()
                 }
+                systemSegments.append(contentsOf: normalizedSegments)
             } catch {
-                fputs("[meeting] final mic chunk transcription failed: \(error)\n", stderr)
+                systemChunkHealthTracker.noteFailedChunk()
+                fputs("[meeting] final system chunk transcription failed: \(error)\n", stderr)
             }
-            try? FileManager.default.removeItem(at: lastMicURL)
+            try? FileManager.default.removeItem(at: lastSystemChunkURL)
         }
 
-        // Transcribe system audio (batch — this is the only wait after meeting ends)
-        let systemResult: SpeechTranscriptionResult
         var diarizationSegments: [TimedSpeakerSegment]?
         if let systemAudioURL {
-            fputs("[meeting] transcribing system audio (batch)\n", stderr)
-            systemResult = try await transcriptionCoordinator.transcribeMeeting(at: systemAudioURL, backend: backend, customWords: serializedCustomWords)
-
             // Run speaker diarization on system audio (batch post-processing)
             do {
                 if let diarizationResult = try await transcriptionCoordinator.diarizeSystemAudio(at: systemAudioURL) {
@@ -268,10 +387,6 @@ final class MeetingSession {
             } catch {
                 fputs("[meeting] diarization failed: \(error)\n", stderr)
             }
-
-            try? FileManager.default.removeItem(at: systemAudioURL)
-        } else {
-            systemResult = SpeechTranscriptionResult(text: "", segments: [])
         }
 
         micSegments.append(contentsOf: await micChunkCollector.closeAndDrainSortedSegments())
@@ -282,20 +397,122 @@ final class MeetingSession {
             return lhs.start < rhs.start
         }
 
-        // Drain system chunks (discard — batch transcription above is authoritative)
-        _ = await systemChunkCollector.closeAndDrainSortedSegments()
+        systemSegments.append(contentsOf: await systemChunkCollector.closeAndDrainSortedSegments())
+        systemSegments.sort { lhs, rhs in
+            if lhs.start == rhs.start {
+                return lhs.text < rhs.text
+            }
+            return lhs.start < rhs.start
+        }
+
+        if let fullSessionMicURL {
+            let micRecovery = await repairMicSegmentsIfNeeded(
+                existingMicSegments: micSegments,
+                fullSessionMicURL: fullSessionMicURL,
+                meetingStart: meetingStart,
+                endTime: endTime
+            )
+            switch micRecovery {
+            case .none:
+                break
+            case .append(let repairedMicSegments):
+                micSegments.append(contentsOf: repairedMicSegments)
+                micSegments.sort { lhs, rhs in
+                    if lhs.start == rhs.start {
+                        return lhs.text < rhs.text
+                    }
+                    return lhs.start < rhs.start
+                }
+            case .replace(let fallbackMicSegments):
+                micSegments = fallbackMicSegments.sorted { lhs, rhs in
+                    if lhs.start == rhs.start {
+                        return lhs.text < rhs.text
+                    }
+                    return lhs.start < rhs.start
+                }
+            }
+        }
+
+        if let systemAudioURL {
+            let systemRecovery = await repairSystemSegmentsIfNeeded(
+                existingSystemSegments: systemSegments,
+                systemAudioURL: systemAudioURL,
+                meetingStart: meetingStart,
+                endTime: endTime
+            )
+            switch systemRecovery {
+            case .none:
+                break
+            case .append(let repairedSystemSegments):
+                systemSegments.append(contentsOf: repairedSystemSegments)
+                systemSegments.sort { lhs, rhs in
+                    if lhs.start == rhs.start {
+                        return lhs.text < rhs.text
+                    }
+                    return lhs.start < rhs.start
+                }
+            case .replace(let fallbackSystemSegments):
+                systemSegments = fallbackSystemSegments.sorted { lhs, rhs in
+                    if lhs.start == rhs.start {
+                        return lhs.text < rhs.text
+                    }
+                    return lhs.start < rhs.start
+                }
+            }
+        }
 
         fputs("[meeting] \(micSegments.count) mic chunks transcribed during meeting\n", stderr)
+        fputs("[meeting] \(systemSegments.count) system chunks transcribed during meeting\n", stderr)
+
+        // Speaker-embedding bleed detection: compare mic chunk embeddings against
+        // system speaker embeddings from diarization. Drop mic segments that match
+        // a system speaker (bleed) and keep segments that don't match (user speech).
+        if let diarizationSegments, !diarizationSegments.isEmpty, let fullSessionMicURL {
+            if let diarizerManager = await transcriptionCoordinator.getDiarizerManager() {
+                do {
+                    let micSamples = try AudioConverter().resampleAudioFile(fullSessionMicURL)
+                    let centroids = MeetingBleedDetector.systemSpeakerCentroids(from: diarizationSegments)
+                    if !centroids.isEmpty {
+                        let bleedResult = MeetingBleedDetector.filterBleed(
+                            micSegments: micSegments,
+                            fullMicSamples: micSamples,
+                            systemSpeakerCentroids: centroids,
+                            diarizerManager: diarizerManager
+                        )
+                        fputs("[meeting] bleed detection: kept \(bleedResult.keptSegments.count), dropped \(bleedResult.droppedCount) mic segments\n", stderr)
+                        micSegments = bleedResult.keptSegments
+                    }
+                } catch {
+                    fputs("[meeting] bleed detection failed, keeping all mic segments: \(error)\n", stderr)
+                }
+            }
+        }
+
+        let reconciledTranscriptInputs = TranscriptReconciler.reconcile(
+            micTurns: micSegments,
+            systemSegments: systemSegments,
+            diarizationSegments: diarizationSegments
+        )
+        let protectedTranscriptInputs: ReconciledTranscriptInputs
+        if let fullSessionMicURL {
+            protectedTranscriptInputs = await protectLocalMicSpeechAfterReconciliation(
+                originalMicSegments: micSegments,
+                reconciledTranscriptInputs: reconciledTranscriptInputs,
+                fullSessionMicURL: fullSessionMicURL
+            )
+        } else {
+            protectedTranscriptInputs = reconciledTranscriptInputs
+        }
 
         let rawTranscript = TranscriptFormatter.merge(
-            micSegments: micSegments,
-            systemSegments: systemResult.segments,
-            diarizationSegments: diarizationSegments,
+            micSegments: protectedTranscriptInputs.micSegments,
+            systemSegments: protectedTranscriptInputs.systemSegments,
+            diarizationSegments: protectedTranscriptInputs.diarizationSegments,
             meetingStart: meetingStart
         )
 
-        // Auto-generate meeting title from transcript
         let generatedTitle: String
+        onProgress?(.generatingTitle)
         if let autoTitle = await MeetingSummaryClient.generateTitle(transcript: rawTranscript, config: config),
            !autoTitle.isEmpty {
             generatedTitle = autoTitle
@@ -304,10 +521,20 @@ final class MeetingSession {
             generatedTitle = title
         }
 
+        let templateSnapshot = MeetingTemplates.resolveSnapshot(
+            id: config.defaultMeetingTemplateID,
+            customTemplates: config.customMeetingTemplates
+        )
+        let visualContext = await screenContextCollector.stopAndDrain()
+        Self.logger.info("visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(self.config.useCoreAudioTap)")
+        fputs("[meeting] visual context drained chars=\(visualContext.count) includedInPrompt=\(!visualContext.isEmpty) useOCR=\(config.useCoreAudioTap)\n", stderr)
+        onProgress?(.summarizingNotes)
         let formattedNotes = await MeetingSummaryClient.summarize(
             transcript: rawTranscript,
             meetingTitle: generatedTitle,
-            config: config
+            config: config,
+            template: templateSnapshot,
+            visualContext: visualContext.isEmpty ? nil : visualContext
         )
 
         return MeetingSessionResult(
@@ -318,107 +545,106 @@ final class MeetingSession {
             durationSeconds: max(endTime.timeIntervalSince(meetingStart), 0),
             rawTranscript: rawTranscript,
             formattedNotes: formattedNotes,
-            micAudioPath: nil,
-            systemAudioPath: nil
+            retainedRecordingURL: retainedRecordingURL,
+            retainedRecordingError: retainedRecordingWriterError,
+            systemRecordingURL: systemAudioURL,
+            templateSnapshot: templateSnapshot
         )
     }
 
     /// Called by VAD on speech boundaries or max-duration fallback.
     /// Rotates both mic and system audio files and sends completed chunks for transcription.
     private func rotateChunk() {
+        chunkRotationQueue.async { [weak self] in
+            self?.rotateChunkOnQueue()
+        }
+    }
+
+    private func rotateChunkOnQueue() {
         guard isRecording else { return }
-        let meetingStart = self.startTime ?? Date()
-        let chunkStart = currentChunkStartTime ?? meetingStart
+        guard let chunkTiming = chunkTimingTracker.rotate() else {
+            return
+        }
+        let rawChunkURL = rawMicChunkRecorder?.rotateFile()
 
-        // Rotate both files — no gap, taps keep running
-        let micChunkURL = streamingMicRecorder.rotateFile()
-        let systemChunkURL = systemAudioRecorder.rotateFile()
-        currentChunkStartTime = Date()
-
-        let chunkOffset = chunkStart.timeIntervalSince(meetingStart)
-        let backend = self.backend
-
-        fputs("[meeting] rotating chunk at offset=\(String(format: "%.0f", chunkOffset))s\n", stderr)
-
-        // Transcribe mic chunk
-        var micTask: Task<SpeechSegment?, Never>?
-        if let micChunkURL {
-            let task = Task { [weak self] () -> SpeechSegment? in
-                defer {
-                    try? FileManager.default.removeItem(at: micChunkURL)
-                }
-                guard let self else { return nil }
-                do {
-                    if Task.isCancelled { return nil }
-                    let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: micChunkURL, backend: backend, customWords: self.serializedCustomWords)
-                    if !result.text.isEmpty {
-                        fputs("[meeting] mic chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
-                        // Use token-level segments with timing when available for accurate
-                        // overlap detection with system audio stream.
-                        let hasTimedSegments = result.segments.count > 1 ||
-                            result.segments.first.map { $0.end > $0.start } ?? false
-                        if hasTimedSegments {
-                            let offsetSegments = result.segments.map { seg in
-                                SpeechSegment(start: seg.start + chunkOffset, end: seg.end + chunkOffset, text: seg.text)
-                            }
-                            self.resolvedMicSegments.withLock { $0.append(contentsOf: offsetSegments) }
-                        } else {
-                            let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
-                            self.resolvedMicSegments.withLock { $0.append(segment) }
-                        }
-                        return SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
-                    }
-                } catch {
-                    fputs("[meeting] mic chunk transcription failed: \(error)\n", stderr)
-                }
-                return nil
-            }
-            micTask = task
-            if !micChunkCollector.add(task) {
-                task.cancel()
-            }
+        guard rawChunkURL != nil else {
+            return
         }
 
-        // Transcribe system audio chunk — serialized after mic to avoid concurrent
-        // CoreML predictions whose MLMultiArray buffers race with autorelease pool
-        // cleanup on the cooperative thread pool (causes EXC_BAD_ACCESS).
-        if let systemChunkURL {
-            let precedingMicTask = micTask
-            let systemTask = Task { [weak self] () -> SpeechSegment? in
-                // Wait for mic transcription to finish first
-                if let precedingMicTask {
-                    _ = await precedingMicTask.value
+        // Transcribe the completed chunk async
+        let chunkOffset = chunkTiming.startTimeSeconds
+
+        fputs("[meeting] rotating raw mic chunk at offset=\(String(format: "%.0f", chunkOffset))s\n", stderr)
+
+        let task = Task { [weak self] () -> [SpeechSegment] in
+            guard let self else { return [] }
+            if Task.isCancelled {
+                self.cleanupTemporaryChunkURLs(rawChunkURL)
+                return []
+            }
+            let segments = await self.transcribeMicChunk(
+                rawURL: rawChunkURL,
+                chunkTiming: chunkTiming,
+                isFinalChunk: false
+            )
+            if !segments.isEmpty {
+                self.resolvedMicSegments.withLock { $0.append(contentsOf: segments) }
+            }
+            return segments
+        }
+        if !micChunkCollector.add(task) {
+            task.cancel()
+            cleanupTemporaryChunkURLs(rawChunkURL)
+        }
+    }
+
+    private func rotateSystemChunk() {
+        chunkRotationQueue.async { [weak self] in
+            self?.rotateSystemChunkOnQueue()
+        }
+    }
+
+    private func rotateSystemChunkOnQueue() {
+        guard isRecording else { return }
+        guard let chunkURL = systemChunkRecorder?.rotateFile(),
+              let chunkTiming = systemChunkTimingTracker.rotate() else {
+            return
+        }
+
+        let chunkOffset = chunkTiming.startTimeSeconds
+        let chunkDuration = chunkTiming.durationSeconds
+        let backend = self.backend
+
+        fputs("[meeting] rotating system chunk at offset=\(String(format: "%.0f", chunkOffset))s\n", stderr)
+
+        let task = Task { [weak self] () -> [SpeechSegment] in
+            defer {
+                try? FileManager.default.removeItem(at: chunkURL)
+            }
+            guard let self else { return [] }
+            do {
+                if Task.isCancelled {
+                    return []
                 }
-                defer {
-                    try? FileManager.default.removeItem(at: systemChunkURL)
-                }
-                guard let self else { return nil }
-                do {
-                    if Task.isCancelled { return nil }
-                    let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: systemChunkURL, backend: backend, customWords: self.serializedCustomWords)
-                    if !result.text.isEmpty {
-                        fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
-                        // Use token-level segments with timing when available so that
-                        // diarization can match each token to the correct speaker by
-                        // time overlap. Without this, the whole chunk collapses to a
-                        // point in time and only the first speaker gets attributed.
-                        let hasTimedSegments = result.segments.count > 1 ||
-                            result.segments.first.map { $0.end > $0.start } ?? false
-                        if hasTimedSegments {
-                            let offsetSegments = result.segments.map { seg in
-                                SpeechSegment(start: seg.start + chunkOffset, end: seg.end + chunkOffset, text: seg.text)
-                            }
-                            self.resolvedSystemSegments.withLock { $0.append(contentsOf: offsetSegments) }
-                        } else {
-                            let segment = SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
-                            self.resolvedSystemSegments.withLock { $0.append(segment) }
-                        }
+                let result = try await self.transcriptionCoordinator.transcribeMeetingChunk(at: chunkURL, backend: backend)
+                if !result.text.isEmpty {
+                    fputs("[meeting] system chunk transcribed: \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                    let normalizedSegments = self.normalizeSystemTranscription(
+                        result: result,
+                        startTime: chunkOffset,
+                        endTime: chunkOffset + max(chunkDuration, 0.1)
+                    )
+                    if normalizedSegments.isEmpty {
+                        self.systemChunkHealthTracker.noteEmptyChunk()
+                    } else {
+                        self.systemChunkHealthTracker.noteSuccessfulChunk()
+                        self.resolvedSystemSegments.withLock { $0.append(contentsOf: normalizedSegments) }
 
                         // Run diarization on this chunk for live speaker labels.
                         // The shared DiarizerManager's SpeakerManager persists across chunks,
                         // so speaker IDs will be consistent as it matches embeddings.
                         do {
-                            if let diarResult = try await self.transcriptionCoordinator.diarizeSystemAudio(at: systemChunkURL) {
+                            if let diarResult = try await self.transcriptionCoordinator.diarizeSystemAudio(at: chunkURL) {
                                 let offsetSegments = diarResult.segments.map { seg in
                                     TimedSpeakerSegment(
                                         speakerId: seg.speakerId,
@@ -430,7 +656,6 @@ final class MeetingSession {
                                 }
                                 self.resolvedDiarizationSegments.withLock { $0.append(contentsOf: offsetSegments) }
 
-                                // Register new speaker IDs in the stable label map
                                 for seg in diarResult.segments {
                                     self.speakerLabelMap.withLock { map in
                                         if map[seg.speakerId] == nil {
@@ -449,17 +674,440 @@ final class MeetingSession {
                         } catch {
                             fputs("[meeting] chunk diarization failed: \(error)\n", stderr)
                         }
-
-                        return SpeechSegment(start: chunkOffset, end: chunkOffset, text: result.text)
                     }
-                } catch {
-                    fputs("[meeting] system chunk transcription failed: \(error)\n", stderr)
+                    return normalizedSegments
                 }
-                return nil
+                self.systemChunkHealthTracker.noteEmptyChunk()
+            } catch {
+                self.systemChunkHealthTracker.noteFailedChunk()
+                fputs("[meeting] system chunk transcription failed: \(error)\n", stderr)
             }
-            if !systemChunkCollector.add(systemTask) {
-                systemTask.cancel()
+            return []
+        }
+        if !systemChunkCollector.add(task) {
+            task.cancel()
+        }
+    }
+
+    private func setupRetainedRecordingWriterIfNeeded() {
+        retainedRecordingWriter = nil
+        retainedRecordingWriterError = nil
+
+        guard config.meetingRecordingSavePolicy != .never else { return }
+
+        do {
+            retainedRecordingWriter = try MeetingRecordingWriter()
+        } catch {
+            retainedRecordingWriterError = error
+            fputs("[meeting] failed to prepare retained recording writer: \(error)\n", stderr)
+        }
+    }
+
+    private func prepareRealtimeAudioPipeline(vadManager: VadManager?) throws {
+        rawMicChunkRecorder = try PCMChunkRecorder(directoryName: "muesli-meeting-mic-chunks")
+        systemChunkRecorder = try PCMChunkRecorder(directoryName: "muesli-meeting-system-chunks")
+        configureRealtimeAudioCallbacks(vadManager: vadManager)
+    }
+
+    private func configureRealtimeAudioCallbacks(vadManager: VadManager?) {
+        if let vadManager {
+            let controller = StreamingVadController(vadManager: vadManager)
+            controller.onChunkBoundary = { [weak self] in
+                self?.rotateChunk()
             }
+            controller.start()
+            vadController = controller
+
+            let systemController = StreamingVadController(vadManager: vadManager)
+            systemController.onChunkBoundary = { [weak self] in
+                self?.rotateSystemChunk()
+            }
+            systemController.start()
+            systemVadController = systemController
+        } else {
+            vadController = nil
+            systemVadController = nil
+        }
+        neuralAec.resetForStreaming()
+        streamingMicRecorder.onAudioBuffer = nil
+
+        streamingMicRecorder.onPCMSamples = { [weak self] samples in
+            self?.enqueueRealtimeMicSamples(samples)
+        }
+        systemAudioRecorder.onPCMSamples = { [weak self] samples in
+            self?.enqueueRealtimeSystemSamples(samples)
+        }
+    }
+
+    private func enqueueRealtimeMicSamples(_ rawSamples: [Int16]) {
+        guard !rawSamples.isEmpty else { return }
+
+        chunkRotationQueue.async { [weak self] in
+            guard let self, self.isRecording else { return }
+
+            self.retainedRecordingWriter?.appendMic(rawSamples)
+            self.chunkTimingTracker.append(sampleCount: rawSamples.count)
+
+            let floatSamples = rawSamples.map { Float($0) / 32767.0 }
+
+            // VAD always sees raw audio for reliable speech boundary detection
+            if let vadController = self.vadController {
+                vadController.processAudio(floatSamples)
+            }
+
+            // AEC: clean mic using position-aligned system reference
+            let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
+            if !cleanedFloat.isEmpty {
+                let cleanedInt16 = cleanedFloat.map { sample -> Int16 in
+                    Int16(max(-1.0, min(1.0, sample)) * 32767)
+                }
+                self.rawMicChunkRecorder?.append(cleanedInt16)
+            }
+        }
+    }
+
+    private func enqueueRealtimeSystemSamples(_ samples: [Int16]) {
+        guard !samples.isEmpty else { return }
+
+        chunkRotationQueue.async { [weak self] in
+            guard let self, self.isRecording else { return }
+
+            self.retainedRecordingWriter?.appendSystem(samples)
+            self.systemChunkRecorder?.append(samples)
+            self.systemChunkTimingTracker.append(sampleCount: samples.count)
+
+            let floatSamples = samples.map { Float($0) / 32767.0 }
+            self.neuralAec.feedSystemSamples(floatSamples)
+
+            if let systemVadController = self.systemVadController {
+                systemVadController.processAudio(floatSamples)
+            }
+        }
+    }
+
+    private func transcribeMicChunk(
+        rawURL: URL?,
+        chunkTiming: MeetingChunkTimingSnapshot?,
+        isFinalChunk: Bool
+    ) async -> [SpeechSegment] {
+        defer {
+            cleanupTemporaryChunkURLs(rawURL)
+        }
+
+        guard let chunkTiming, let rawURL else { return [] }
+
+        let chunkOffset = chunkTiming.startTimeSeconds
+        let chunkDuration = chunkTiming.durationSeconds
+        let logPrefix = isFinalChunk ? "[meeting] transcribing final mic chunk" : "[meeting] transcribing mic chunk"
+
+        return await transcribeMicChunk(
+            at: rawURL,
+            chunkOffset: chunkOffset,
+            chunkDuration: chunkDuration,
+            logPrefix: logPrefix
+        ) ?? []
+    }
+
+    private func transcribeMicChunk(
+        at url: URL,
+        chunkOffset: TimeInterval,
+        chunkDuration: TimeInterval,
+        logPrefix: String
+    ) async -> [SpeechSegment]? {
+        fputs("\(logPrefix) (offset=\(String(format: "%.0f", chunkOffset))s, source=raw)\n", stderr)
+        do {
+            let result = try await transcriptionCoordinator.transcribeMeetingChunk(
+                at: url,
+                backend: backend
+            )
+            if !result.text.isEmpty {
+                fputs("[meeting] mic chunk transcribed (raw): \"\(String(result.text.prefix(60)))...\"\n", stderr)
+                let normalizedSegments = MicTurnNormalizer.normalize(
+                    result: result,
+                    startTime: chunkOffset,
+                    endTime: chunkOffset + max(chunkDuration, 0.1)
+                )
+                if normalizedSegments.isEmpty {
+                    micChunkHealthTracker.noteEmptyChunk()
+                } else {
+                    micChunkHealthTracker.noteSuccessfulChunk()
+                }
+                return normalizedSegments
+            }
+            micChunkHealthTracker.noteEmptyChunk()
+            return []
+        } catch {
+            micChunkHealthTracker.noteFailedChunk()
+            fputs("[meeting] mic chunk transcription failed (raw): \(error)\n", stderr)
+            return nil
+        }
+    }
+
+    private func cleanupTemporaryChunkURLs(_ urls: URL?...) {
+        urls.compactMap { $0 }.forEach { url in
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private func normalizeSystemTranscription(
+        result: SpeechTranscriptionResult,
+        startTime: TimeInterval,
+        endTime: TimeInterval
+    ) -> [SpeechSegment] {
+        SystemTurnNormalizer.normalize(
+            result: result,
+            startTime: startTime,
+            endTime: endTime
+        )
+    }
+
+    private func durationSeconds(from start: Date, to end: Date) -> Double {
+        max(end.timeIntervalSince(start), 0)
+    }
+
+    private func protectLocalMicSpeechAfterReconciliation(
+        originalMicSegments: [SpeechSegment],
+        reconciledTranscriptInputs: ReconciledTranscriptInputs,
+        fullSessionMicURL: URL
+    ) async -> ReconciledTranscriptInputs {
+        guard !originalMicSegments.isEmpty else { return reconciledTranscriptInputs }
+        guard let vadManager = await transcriptionCoordinator.getVadManager() else {
+            return reconciledTranscriptInputs
+        }
+
+        do {
+            let samples = try AudioConverter().resampleAudioFile(fullSessionMicURL)
+            let offlineSpeechSegments = try await vadManager.segmentSpeech(
+                samples,
+                config: VadSegmentationConfig(maxSpeechDuration: 10.0, speechPadding: 0.15)
+            )
+            let decision = MeetingLocalSpeechGuard.decide(
+                originalMicSegments: originalMicSegments,
+                reconciledMicSegments: reconciledTranscriptInputs.micSegments,
+                offlineSpeechSegments: offlineSpeechSegments,
+                chunkHealth: micChunkHealthTracker.snapshot()
+            )
+
+            if decision.revertedToOriginal {
+                fputs(
+                    "[meeting] restored original mic turns after reconciliation " +
+                    "(coverage \(String(format: "%.2f", decision.reconciledCoverageRatio)) -> " +
+                    "\(String(format: "%.2f", decision.originalCoverageRatio)); " +
+                    "\(decision.reason))\n",
+                    stderr
+                )
+            }
+
+            return ReconciledTranscriptInputs(
+                micSegments: decision.preferredMicSegments,
+                systemSegments: reconciledTranscriptInputs.systemSegments,
+                diarizationSegments: reconciledTranscriptInputs.diarizationSegments
+            )
+        } catch {
+            fputs("[meeting] failed to validate reconciled mic coverage: \(error)\n", stderr)
+            return reconciledTranscriptInputs
+        }
+    }
+
+    private func repairMicSegmentsIfNeeded(
+        existingMicSegments: [SpeechSegment],
+        fullSessionMicURL: URL,
+        meetingStart: Date,
+        endTime: Date
+    ) async -> MeetingTranscriptRecoveryResult {
+        let totalDuration = durationSeconds(from: meetingStart, to: endTime)
+
+        guard let vadManager = await transcriptionCoordinator.getVadManager() else {
+            if existingMicSegments.isEmpty {
+                return .replace(await fallbackToFullSessionMicTranscription(
+                    fullSessionMicURL: fullSessionMicURL,
+                    meetingDuration: totalDuration
+                ))
+            }
+            return .none
+        }
+
+        do {
+            let samples = try AudioConverter().resampleAudioFile(fullSessionMicURL)
+            let speechSegments = try await vadManager.segmentSpeech(
+                samples,
+                config: VadSegmentationConfig(maxSpeechDuration: 10.0, speechPadding: 0.15)
+            )
+            let health = MeetingTranscriptHealthMonitor.evaluate(
+                existingSegments: existingMicSegments,
+                offlineSpeechSegments: speechSegments,
+                chunkHealth: micChunkHealthTracker.snapshot()
+            )
+            fputs("\(health.summaryLine)\n", stderr)
+
+            switch health.action {
+            case .accept:
+                return .none
+            case .fullFallback(let reason):
+                fputs("[meeting] transcript health triggered full mic fallback: \(reason)\n", stderr)
+                return .replace(await fallbackToFullSessionMicTranscription(
+                    fullSessionMicURL: fullSessionMicURL,
+                    meetingDuration: totalDuration
+                ))
+            case .selectiveRepair(let repairSegments):
+                guard !repairSegments.isEmpty else { return .none }
+
+                fputs("[meeting] repairing \(repairSegments.count) uncovered mic speech regions\n", stderr)
+
+                var repairedSegments: [SpeechSegment] = []
+                for speechSegment in repairSegments {
+                    let startSample = max(0, speechSegment.startSample(sampleRate: VadManager.sampleRate))
+                    let endSample = min(samples.count, speechSegment.endSample(sampleRate: VadManager.sampleRate))
+                    guard endSample > startSample else { continue }
+
+                    let segmentURL = try MeetingMicRepairPlanner.writeTemporaryWAV(
+                        samples: Array(samples[startSample..<endSample])
+                    )
+                    defer { try? FileManager.default.removeItem(at: segmentURL) }
+
+                    let result = try await transcriptionCoordinator.transcribeMeeting(
+                        at: segmentURL,
+                        backend: backend
+                    )
+                    repairedSegments.append(contentsOf: MicTurnNormalizer.normalize(
+                        result: result,
+                        startTime: speechSegment.startTime,
+                        endTime: speechSegment.endTime
+                    ))
+                }
+                return repairedSegments.isEmpty ? .none : .append(repairedSegments)
+            }
+        } catch {
+            fputs("[meeting] mic repair pass failed: \(error)\n", stderr)
+            if existingMicSegments.isEmpty {
+                return .replace(await fallbackToFullSessionMicTranscription(
+                    fullSessionMicURL: fullSessionMicURL,
+                    meetingDuration: totalDuration
+                ))
+            }
+            return .none
+        }
+    }
+
+    private func repairSystemSegmentsIfNeeded(
+        existingSystemSegments: [SpeechSegment],
+        systemAudioURL: URL,
+        meetingStart: Date,
+        endTime: Date
+    ) async -> MeetingTranscriptRecoveryResult {
+        let totalDuration = durationSeconds(from: meetingStart, to: endTime)
+
+        guard let vadManager = await transcriptionCoordinator.getVadManager() else {
+            if existingSystemSegments.isEmpty {
+                return .replace(await fallbackToFullSessionSystemTranscription(
+                    systemAudioURL: systemAudioURL,
+                    meetingDuration: totalDuration
+                ))
+            }
+            return .none
+        }
+
+        do {
+            let samples = try AudioConverter().resampleAudioFile(systemAudioURL)
+            let speechSegments = try await vadManager.segmentSpeech(
+                samples,
+                config: VadSegmentationConfig(maxSpeechDuration: 10.0, speechPadding: 0.15)
+            )
+            let health = MeetingTranscriptHealthMonitor.evaluate(
+                existingSegments: existingSystemSegments,
+                offlineSpeechSegments: speechSegments,
+                chunkHealth: systemChunkHealthTracker.snapshot()
+            )
+            fputs("[meeting] system \(health.summaryLine.dropFirst("[meeting] ".count))\n", stderr)
+
+            switch health.action {
+            case .accept:
+                return .none
+            case .fullFallback(let reason):
+                fputs("[meeting] transcript health triggered full system fallback: \(reason)\n", stderr)
+                return .replace(await fallbackToFullSessionSystemTranscription(
+                    systemAudioURL: systemAudioURL,
+                    meetingDuration: totalDuration
+                ))
+            case .selectiveRepair(let repairSegments):
+                guard !repairSegments.isEmpty else { return .none }
+
+                fputs("[meeting] repairing \(repairSegments.count) uncovered system speech regions\n", stderr)
+
+                var repairedSegments: [SpeechSegment] = []
+                for speechSegment in repairSegments {
+                    let startSample = max(0, speechSegment.startSample(sampleRate: VadManager.sampleRate))
+                    let endSample = min(samples.count, speechSegment.endSample(sampleRate: VadManager.sampleRate))
+                    guard endSample > startSample else { continue }
+
+                    let segmentURL = try MeetingMicRepairPlanner.writeTemporaryWAV(
+                        samples: Array(samples[startSample..<endSample])
+                    )
+                    defer { try? FileManager.default.removeItem(at: segmentURL) }
+
+                    let result = try await transcriptionCoordinator.transcribeMeeting(
+                        at: segmentURL,
+                        backend: backend
+                    )
+                    repairedSegments.append(contentsOf: normalizeSystemTranscription(
+                        result: result,
+                        startTime: speechSegment.startTime,
+                        endTime: speechSegment.endTime
+                    ))
+                }
+                return repairedSegments.isEmpty ? .none : .append(repairedSegments)
+            }
+        } catch {
+            fputs("[meeting] system repair pass failed: \(error)\n", stderr)
+            if existingSystemSegments.isEmpty {
+                return .replace(await fallbackToFullSessionSystemTranscription(
+                    systemAudioURL: systemAudioURL,
+                    meetingDuration: totalDuration
+                ))
+            }
+            return .none
+        }
+    }
+
+    private func fallbackToFullSessionMicTranscription(
+        fullSessionMicURL: URL,
+        meetingDuration: Double
+    ) async -> [SpeechSegment] {
+        fputs("[meeting] no mic chunks survived, falling back to full-session mic transcription\n", stderr)
+        do {
+            let result = try await transcriptionCoordinator.transcribeMeeting(
+                at: fullSessionMicURL,
+                backend: backend
+            )
+            return MicTurnNormalizer.normalize(
+                result: result,
+                startTime: 0,
+                endTime: meetingDuration
+            )
+        } catch {
+            fputs("[meeting] full-session mic fallback transcription failed: \(error)\n", stderr)
+            return []
+        }
+    }
+
+    private func fallbackToFullSessionSystemTranscription(
+        systemAudioURL: URL,
+        meetingDuration: Double
+    ) async -> [SpeechSegment] {
+        fputs("[meeting] no system chunks survived, falling back to full-session system transcription\n", stderr)
+        do {
+            let result = try await transcriptionCoordinator.transcribeMeeting(
+                at: systemAudioURL,
+                backend: backend
+            )
+            return normalizeSystemTranscription(
+                result: result,
+                startTime: 0,
+                endTime: meetingDuration
+            )
+        } catch {
+            fputs("[meeting] full-session system fallback transcription failed: \(error)\n", stderr)
+            return []
         }
     }
 }

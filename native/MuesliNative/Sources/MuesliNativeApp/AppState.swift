@@ -12,15 +12,25 @@ enum DashboardTab: String, CaseIterable {
     case about
 }
 
+enum MeetingsNavigationState: Equatable {
+    case browser
+    case document(Int64)
+}
+
 @MainActor
 @Observable
 final class AppState {
     // Dashboard data
     var dictationRows: [DictationRecord] = []
     var meetingRows: [MeetingRecord] = []
+    var totalMeetingCount: Int = 0
+    var meetingCountsByFolder: [Int64: Int] = [:]
     var selectedMeetingID: Int64?
+    var selectedMeetingRecord: MeetingRecord?
     var folders: [MeetingFolder] = []
     var selectedFolderID: Int64?  // nil = "All Meetings"
+    var meetingsNavigationState: MeetingsNavigationState = .browser
+    var isMeetingTemplatesManagerPresented: Bool = false
     var dictationStats: DictationStats = DictationStats(
         totalWords: 0, totalSessions: 0, averageWordsPerSession: 0,
         averageWPM: 0, currentStreakDays: 0, longestStreakDays: 0
@@ -29,12 +39,19 @@ final class AppState {
 
     // Config-driven state
     var selectedBackend: BackendOption = .whisper
+    var selectedMeetingTranscriptionBackend: BackendOption = .whisper
     var selectedMeetingSummaryBackend: MeetingSummaryBackendOption = .openAI
+    var activePostProcessor: PostProcessorOption = PostProcessorOption.defaultOption
     var config: AppConfig = AppConfig()
 
     // Live status
     var isMeetingRecording: Bool = false
     var isChatGPTAuthenticated: Bool = false
+    var isGoogleCalendarAvailable: Bool = false
+    var isGoogleCalendarVerified: Bool = false
+    var isGoogleCalendarAuthenticated: Bool = false
+    var upcomingCalendarEvents: [UnifiedCalendarEvent] = []
+    var hiddenCalendarEventIDs: Set<String> = []
 
     // Dictation pagination & filtering
     var dictationPageSize: Int = 50
@@ -42,12 +59,23 @@ final class AppState {
     var dictationToDate: String? = nil
     var hasMoreDictations: Bool = true
 
+    // Search
+    var searchQuery: String = ""
+    var searchResultDictations: [DictationRecord] = []
+    var searchResultMeetings: [MeetingRecord] = []
+    var focusSearchField: Bool = false
+    var isSearchActive: Bool { !searchQuery.isEmpty }
+
     // Navigation
     var selectedTab: DashboardTab = .dictations
 
     // Computed
     var selectedMeeting: MeetingRecord? {
-        guard let id = selectedMeetingID else { return meetingRows.first }
-        return meetingRows.first(where: { $0.id == id })
+        guard let id = selectedMeetingID else { return nil }
+        if let row = meetingRows.first(where: { $0.id == id }) {
+            return row
+        }
+        guard selectedMeetingRecord?.id == id else { return nil }
+        return selectedMeetingRecord
     }
 }

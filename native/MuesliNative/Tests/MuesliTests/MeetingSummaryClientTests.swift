@@ -5,6 +5,20 @@ import MuesliCore
 
 @Suite("MeetingSummaryClient")
 struct MeetingSummaryClientTests {
+    private let customTemplate = MeetingTemplateSnapshot(
+        id: "custom-follow-up",
+        name: "Customer Follow-Up",
+        kind: .custom,
+        prompt: """
+        Use this structure exactly:
+
+        ## Follow-Up Summary
+        - Main takeaways
+
+        ## Risks
+        - Any risks
+        """
+    )
 
     @Test("summarize returns raw transcript fallback when no API key")
     func fallbackWithoutKey() async {
@@ -20,6 +34,69 @@ struct MeetingSummaryClientTests {
 
         #expect(result.contains("## Raw Transcript"))
         #expect(result.contains("Hello world"))
+    }
+
+    @Test("summary instructions include built-in template structure")
+    func promptIncludesBuiltInTemplate() {
+        let instructions = MeetingSummaryClient.summaryInstructions(for: MeetingTemplates.auto.snapshot)
+
+        #expect(instructions.contains("You are a meeting notes assistant"))
+        #expect(instructions.contains("## Meeting Summary"))
+        #expect(instructions.contains("## Action Items"))
+    }
+
+    @Test("summary instructions include custom template prompt verbatim")
+    func promptIncludesCustomTemplate() {
+        let instructions = MeetingSummaryClient.summaryInstructions(for: customTemplate)
+
+        #expect(instructions.contains("## Follow-Up Summary"))
+        #expect(instructions.contains("## Risks"))
+        #expect(instructions.contains("Do not invent facts"))
+    }
+
+    @Test("summary instructions mention preserving current notes when provided")
+    func promptMentionsPreservingCurrentNotes() {
+        let instructions = MeetingSummaryClient.summaryInstructions(
+            for: customTemplate,
+            existingNotes: "## Notes\n- User added follow-up detail"
+        )
+
+        #expect(instructions.contains("Preserve any concrete user-added details"))
+        #expect(instructions.contains("requested template instead of discarding it"))
+    }
+
+    @Test("summary user prompt includes existing notes context when provided")
+    func userPromptIncludesExistingNotes() {
+        let prompt = MeetingSummaryClient.summaryUserPrompt(
+            transcript: "Transcript body",
+            meetingTitle: "Customer Call",
+            existingNotes: "## Notes\n- User added detail"
+        )
+
+        #expect(prompt.contains("Current notes to preserve and reformat:"))
+        #expect(prompt.contains("User added detail"))
+        #expect(prompt.contains("Raw transcript:\nTranscript body"))
+    }
+
+    @Test("summary user prompt includes meeting context when provided")
+    func userPromptIncludesMeetingContext() {
+        let prompt = MeetingSummaryClient.summaryUserPrompt(
+            transcript: "Transcript body",
+            meetingTitle: "Customer Call",
+            visualContext: """
+            [10:30:00] Google Chrome:
+            App context:
+            App: Google Chrome (example.com/customer)
+
+            OCR visual text:
+            Renewal risk
+            """
+        )
+
+        #expect(prompt.contains("Meeting context captured during the meeting:"))
+        #expect(prompt.contains("App context:"))
+        #expect(prompt.contains("OCR visual text:"))
+        #expect(prompt.contains("Raw transcript:\nTranscript body"))
     }
 
     @Test("summarize routes to OpenRouter when configured")

@@ -22,7 +22,7 @@ struct RunningAppInfo {
 }
 
 /// Result when a meeting is detected.
-struct MeetingDetection {
+struct MeetingDetection: Equatable {
     let appName: String
     let meetingTitle: String?
 }
@@ -41,6 +41,7 @@ final class MeetingDetector {
         "com.tinyspeck.slackmacgap": "Slack",
         "com.webex.meetingmanager": "Webex",
         "com.cisco.webexmeetingsapp": "Webex",
+        "net.whatsapp.WhatsApp": "WhatsApp",
     ]
 
     /// Browsers: always running, so require an extra signal
@@ -70,6 +71,43 @@ final class MeetingDetector {
 
     // MARK: - Evaluate
 
+    /// Returns the current meeting candidate based on system state without
+    /// applying deduplication. This is useful for UI that should be derived
+    /// from the latest detector state rather than edge-triggered callbacks.
+    func currentDetection(_ signals: MeetingSignals, now: Date = Date()) -> MeetingDetection? {
+        if let until = suppressUntil, now < until { return nil }
+        guard signals.micActive || signals.cameraActive else { return nil }
+
+        if signals.cameraActive, signals.micActive {
+            let (appName, _) = bestApp(from: signals.runningApps)
+            if let appName {
+                let title = signals.calendarEvent?.title
+                return MeetingDetection(appName: appName, meetingTitle: title)
+            }
+        }
+
+        guard signals.micActive else { return nil }
+
+        if let cal = signals.calendarEvent {
+            let (appName, _) = bestApp(from: signals.runningApps)
+            return MeetingDetection(appName: appName ?? "Meeting", meetingTitle: cal.title)
+        }
+
+        for app in signals.runningApps where app.bundleID != selfBundleID {
+            if let name = Self.dedicatedApps[app.bundleID] {
+                return MeetingDetection(appName: name, meetingTitle: nil)
+            }
+        }
+
+        for app in signals.runningApps where app.bundleID != selfBundleID {
+            if let name = Self.browserApps[app.bundleID], app.isActive {
+                return MeetingDetection(appName: name, meetingTitle: nil)
+            }
+        }
+
+        return nil
+    }
+
     /// Evaluate signals and return a detection if a meeting should be flagged.
     /// Returns nil if no meeting detected or already notified.
     func evaluate(_ signals: MeetingSignals, now: Date = Date()) -> MeetingDetection? {
@@ -90,15 +128,17 @@ final class MeetingDetector {
         let runningIDs = Set(signals.runningApps.map(\.bundleID))
         detectedKeys = detectedKeys.filter { $0.hasPrefix("cal:") || $0 == "camera" || runningIDs.contains($0) }
 
-        // Priority 0: Camera active = strong meeting signal (nobody turns on camera outside meetings)
-        if signals.cameraActive, !detectedKeys.contains("camera") {
-            detectedKeys.insert("camera")
+        // Priority 0: Camera + mic + meeting app/browser = strong meeting signal.
+        // Camera alone is not enough — apps like Photo Booth or scanning can trigger it.
+        if signals.cameraActive, signals.micActive, !detectedKeys.contains("camera") {
             let (appName, appBundleID) = bestApp(from: signals.runningApps)
-            if let bid = appBundleID { detectedKeys.insert(bid) }
-            // Also mark calendar event to prevent duplicate detection via Priority 1
-            if let cal = signals.calendarEvent { detectedKeys.insert("cal:\(cal.id)") }
-            let title = signals.calendarEvent?.title
-            return MeetingDetection(appName: appName ?? "Meeting", meetingTitle: title)
+            if appName != nil {
+                detectedKeys.insert("camera")
+                if let bid = appBundleID { detectedKeys.insert(bid) }
+                if let cal = signals.calendarEvent { detectedKeys.insert("cal:\(cal.id)") }
+                let title = signals.calendarEvent?.title
+                return MeetingDetection(appName: appName ?? "Meeting", meetingTitle: title)
+            }
         }
 
         // Remaining checks require mic to be active

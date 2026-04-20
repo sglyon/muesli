@@ -13,7 +13,7 @@ struct BackendOption: Equatable {
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
         label: "Parakeet v3",
-        sizeLabel: "~250 MB",
+        sizeLabel: "~450 MB",
         description: "Multilingual, 25 languages. Runs on Apple Neural Engine.",
         recommended: true
     )
@@ -22,35 +22,35 @@ struct BackendOption: Equatable {
         backend: "fluidaudio",
         model: "FluidInference/parakeet-tdt-0.6b-v2-coreml",
         label: "Parakeet v2",
-        sizeLabel: "~250 MB",
+        sizeLabel: "~450 MB",
         description: "English-only, highest recall. Runs on Apple Neural Engine.",
         recommended: false
     )
 
     static let whisperSmall = BackendOption(
         backend: "whisper",
-        model: "ggml-small.en-q5_1",
+        model: "small.en",
         label: "Whisper Small",
-        sizeLabel: "~190 MB",
-        description: "Fast, English-optimized. Quantized for smaller download.",
+        sizeLabel: "~250 MB",
+        description: "Fast, English-optimized. Runs on Apple Neural Engine via CoreML.",
         recommended: false
     )
 
     static let whisperMedium = BackendOption(
         backend: "whisper",
-        model: "ggml-medium.en",
+        model: "medium.en",
         label: "Whisper Medium",
         sizeLabel: "~1.5 GB",
-        description: "Better accuracy, English-only. Good balance of speed and quality.",
+        description: "Better accuracy, English-only. Runs on Apple Neural Engine via CoreML.",
         recommended: false
     )
 
     static let whisperLargeTurbo = BackendOption(
         backend: "whisper",
-        model: "ggml-large-v3-turbo-q5_0",
+        model: "large-v3-v20240930_626MB",
         label: "Whisper Large Turbo",
-        sizeLabel: "~600 MB",
-        description: "Highest accuracy, multilingual. Quantized for faster inference.",
+        sizeLabel: "~626 MB",
+        description: "Highest accuracy, multilingual. Quantized CoreML for faster inference.",
         recommended: false
     )
 
@@ -63,24 +63,50 @@ struct BackendOption: Equatable {
         recommended: false
     )
 
+    static let canaryQwen = BackendOption(
+        backend: "canary",
+        model: "phequals/canary-qwen-2.5b-coreml-int8",
+        label: "Canary Qwen",
+        sizeLabel: "~2.5 GB",
+        description: "INT8 CoreML, autoregressive, experimental. English-first. First use warms up slowly. Final transcript after stop in v1.",
+        recommended: false
+    )
+
+    static let cohereTranscribe = BackendOption(
+        backend: "cohere",
+        model: "phequals/cohere-transcribe-coreml-mixed-precision",
+        label: "Cohere Transcribe",
+        sizeLabel: "~3.8 GB",
+        description: "Mixed precision (FP16 encoder + INT8 decoder). English. High accuracy (#1 Open ASR Leaderboard). Final transcript after stop. May decode hallucinated text during silence — use in quiet environments or with VAD.",
+        recommended: false
+    )
+
     // Default alias
     static let whisper = parakeetMultilingual
 
-    /// Models available for download and use.
-    static let all: [BackendOption] = [
+    static let parakeetFamily: [BackendOption] = [
         .parakeetMultilingual, .parakeetEnglish,
+    ]
+
+    static let whisperFamily: [BackendOption] = [
         .whisperSmall, .whisperMedium, .whisperLargeTurbo,
-        .qwen3Asr, .nemotronStreaming,
     ]
 
     static let qwen3Asr = BackendOption(
         backend: "qwen",
         model: "FluidInference/qwen3-asr-0.6b-coreml",
         label: "Qwen3 ASR",
-        sizeLabel: "~900 MB",
+        sizeLabel: "~1.3 GB",
         description: "Multilingual, 52 languages. Slower than Parakeet (~2-3s). First use takes ~30s to warm up.",
         recommended: false
     )
+
+    static let experimental: [BackendOption] = [
+        .qwen3Asr, .canaryQwen, .nemotronStreaming,
+    ]
+
+    /// Models available for download and use.
+    static let all: [BackendOption] = parakeetFamily + whisperFamily + [.cohereTranscribe] + experimental
 
     /// Models coming soon — shown greyed out in the Models tab.
     static let comingSoon: [BackendOption] = []
@@ -95,10 +121,7 @@ struct BackendOption: Equatable {
         let fm = FileManager.default
         switch backend {
         case "whisper":
-            let filename = model.hasSuffix(".bin") ? model : "\(model).bin"
-            let path = fm.homeDirectoryForCurrentUser
-                .appendingPathComponent(".cache/muesli/models/\(filename)")
-            return fm.fileExists(atPath: path.path)
+            return WhisperKitTranscriber.isModelDownloaded(model)
         case "fluidaudio":
             let supportDir = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/FluidAudio/Models")
@@ -118,6 +141,10 @@ struct BackendOption: Equatable {
             let path = fm.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/muesli/models/nemotron-560ms/encoder/encoder_int8.mlmodelc")
             return fm.fileExists(atPath: path.path)
+        case "canary":
+            return CanaryQwenModelStore.isAvailableLocally()
+        case "cohere":
+            return CohereTranscribeModelStore.isAvailableLocally()
         default:
             return false
         }
@@ -175,10 +202,143 @@ struct MeetingSummaryBackendOption: Equatable {
     static let all: [MeetingSummaryBackendOption] = [.openAI, .openRouter, .chatGPT]
 }
 
+struct PostProcessorOption: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let sizeLabel: String
+    let description: String
+    let downloadURL: URL
+    let filename: String
+
+    var cacheDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/muesli/models/postproc-\(id)", isDirectory: true)
+    }
+
+    var modelURL: URL {
+        cacheDirectory.appendingPathComponent(filename)
+    }
+
+    var isDownloaded: Bool {
+        FileManager.default.fileExists(atPath: modelURL.path)
+    }
+
+    // Fine-tuned Qwen3-0.6B trained on Muesli dictation correction data.
+    // HF repo must be public (or token-gated) before distributing alpha builds.
+    static let finetunedV2 = PostProcessorOption(
+        id: "qwen3-postproc-v2",
+        label: "Post-Proc v2 (Finetuned)",
+        sizeLabel: "~390 MB",
+        description: "Fine-tuned on Muesli dictation data. Best for filler removal, deletion cues, and spoken list formatting.",
+        downloadURL: URL(string: "https://huggingface.co/phequals/qwen3-postproc-v2/resolve/main/qwen3-postproc-v2-q4_k_m.gguf")!,
+        filename: "qwen3-postproc-v2-q4_k_m.gguf"
+    )
+
+    // Vanilla Qwen3.5-0.8B. Stable for basic cleanup; does not reliably convert spoken list cues.
+    static let qwen35_0_8b = PostProcessorOption(
+        id: "qwen35-0.8b",
+        label: "Qwen3.5 0.8B",
+        sizeLabel: "~533 MB",
+        description: "Vanilla Qwen3.5-0.8B. Good for typo correction and filler removal. Spoken list formatting is unreliable.",
+        downloadURL: URL(string: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf")!,
+        filename: "Qwen3.5-0.8B-Q4_K_M.gguf"
+    )
+
+    // Fine-tuned Qwen3.5-0.8B v3 trained on Muesli dictation correction data.
+    static let finetunedV3 = PostProcessorOption(
+        id: "qwen35-postproc-v3",
+        label: "Post-Proc v3 (Finetuned)",
+        sizeLabel: "~505 MB",
+        description: "Fine-tuned Qwen3.5-0.8B on Muesli dictation data. Improved over v2 on filler removal, deletion cues, and spoken list formatting.",
+        downloadURL: URL(string: "https://huggingface.co/phequals/qwen35-postproc-v3-gguf/resolve/main/qwen35-postproc-v3-Q4_K_M.gguf")!,
+        filename: "qwen35-postproc-v3-Q4_K_M.gguf"
+    )
+
+    static let all: [PostProcessorOption] = [.finetunedV3, .finetunedV2, .qwen35_0_8b]
+    static let defaultOption: PostProcessorOption = .finetunedV3
+
+    static var downloaded: [PostProcessorOption] {
+        all.filter(\.isDownloaded)
+    }
+
+    static var downloadedIDs: Set<String> {
+        Set(downloaded.map(\.id))
+    }
+
+    static func resolve(id: String) -> PostProcessorOption {
+        all.first { $0.id == id } ?? defaultOption
+    }
+
+    static func firstDownloaded(excluding excludedID: String? = nil) -> PostProcessorOption? {
+        firstDownloaded(excluding: excludedID, downloadedIDs: downloadedIDs)
+    }
+
+    static func firstDownloaded(excluding excludedID: String? = nil, downloadedIDs: Set<String>) -> PostProcessorOption? {
+        all.first { option in
+            option.id != excludedID && downloadedIDs.contains(option.id)
+        }
+    }
+
+    static func resolveDownloaded(id: String) -> PostProcessorOption? {
+        resolveDownloaded(id: id, downloadedIDs: downloadedIDs)
+    }
+
+    static func resolveDownloaded(id: String, downloadedIDs: Set<String>) -> PostProcessorOption? {
+        let resolved = resolve(id: id)
+        if downloadedIDs.contains(resolved.id) { return resolved }
+        return firstDownloaded(downloadedIDs: downloadedIDs)
+    }
+
+    static func runtimeOption(id: String) -> PostProcessorOption? {
+        runtimeOption(
+            id: id,
+            downloadedIDs: downloadedIDs,
+            hasDevOverride: Qwen3PostProcessorConfig.devOverrideURL() != nil
+        )
+    }
+
+    static func runtimeOption(id: String, downloadedIDs: Set<String>, hasDevOverride: Bool) -> PostProcessorOption? {
+        let configured = resolve(id: id)
+        if downloadedIDs.contains(configured.id) || hasDevOverride { return configured }
+        return firstDownloaded(downloadedIDs: downloadedIDs)
+    }
+
+    static let defaultSystemPrompt = """
+    Clean up speech-to-text transcription. Only make changes when there is a clear error. If the text is already correct, output it exactly as-is.
+
+    You may: fix obvious misspellings, remove filler words (um, uh, like), apply 'scratch that' deletions, and format numbered or bullet lists when dictated.
+
+    Do not: paraphrase, reword, add words, remove meaningful words, change the meaning in any way, wrap the output in markdown, code fences, tags, labels, or commentary, or repeat the output more than once. Preserve the speaker's original phrasing.
+    """
+}
+
 struct CustomWord: Codable, Equatable, Identifiable {
     var id = UUID()
     var word: String
     var replacement: String?
+    var matchingThreshold: Double = 0.85
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case word
+        case replacement
+        case matchingThreshold = "matching_threshold"
+    }
+
+    init(id: UUID = UUID(), word: String, replacement: String?, matchingThreshold: Double = 0.85) {
+        self.id = id
+        self.word = word
+        self.replacement = replacement
+        self.matchingThreshold = Self.clampedThreshold(matchingThreshold)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        word = try c.decode(String.self, forKey: .word)
+        replacement = try c.decodeIfPresent(String.self, forKey: .replacement)
+        matchingThreshold = Self.clampedThreshold(try c.decodeIfPresent(Double.self, forKey: .matchingThreshold) ?? 0.85)
+    }
 
     var displayLabel: String {
         if let replacement, !replacement.isEmpty {
@@ -189,6 +349,36 @@ struct CustomWord: Codable, Equatable, Identifiable {
 
     var targetWord: String {
         replacement ?? word
+    }
+
+    private static func clampedThreshold(_ value: Double) -> Double {
+        min(max(value, 0.70), 0.95)
+    }
+}
+
+enum IndicatorAnchor: String, Codable, CaseIterable {
+    case topLeading = "top_leading"
+    case topCenter = "top_center"
+    case topTrailing = "top_trailing"
+    case midLeading = "mid_leading"
+    case midTrailing = "mid_trailing"
+    case bottomLeading = "bottom_leading"
+    case bottomCenter = "bottom_center"
+    case bottomTrailing = "bottom_trailing"
+    case custom = "custom"
+
+    var label: String {
+        switch self {
+        case .topLeading: return "Top Left"
+        case .topCenter: return "Top Center"
+        case .topTrailing: return "Top Right"
+        case .midLeading: return "Middle Left"
+        case .midTrailing: return "Middle Right"
+        case .bottomLeading: return "Bottom Left"
+        case .bottomCenter: return "Bottom Center"
+        case .bottomTrailing: return "Bottom Right"
+        case .custom: return "Custom"
+        }
     }
 }
 
@@ -552,16 +742,21 @@ struct AppConfig: Codable {
     var dictationHotkey: HotkeyConfig = .default
     var sttBackend: String = BackendOption.whisper.backend
     var sttModel: String = BackendOption.whisper.model
+    var meetingTranscriptionBackend: String = BackendOption.whisper.backend
+    var meetingTranscriptionModel: String = BackendOption.whisper.model
     var meetingSummaryBackend: String = MeetingSummaryBackendOption.openAI.backend
+    var defaultMeetingTemplateID: String = MeetingTemplates.autoID
     var whisperModel: String = BackendOption.whisper.model
     var idleTimeout: Double = 120
     var autoRecordMeetings: Bool = false
     var showMeetingDetectionNotification: Bool = true
+    var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
     var launchAtLogin: Bool = false
     var openDashboardOnLaunch: Bool = true
     var showFloatingIndicator: Bool = true
+    var indicatorAnchor: IndicatorAnchor = .midTrailing
     var dashboardWindowFrame: WindowFrame? = nil
     var indicatorOrigin: CGPointCodable? = nil
     var openAIAPIKey: String = ""
@@ -573,25 +768,45 @@ struct AppConfig: Codable {
     var meetingSummaryModel: String = ""
     var hasCompletedOnboarding: Bool = false
     var userName: String = ""
+    var customMeetingTemplates: [CustomMeetingTemplate] = []
     var customWords: [CustomWord] = [
         CustomWord(word: "muesli", replacement: "muesli"),
     ]
+    var folderOrder: [Int64] = []
+    var soundEnabled: Bool = true
+    var recordingColorHex: String = "1e1e2e"   // Catppuccin Mocha base, without #
+    var menuBarIcon: String = "muesli"
+    var showNextMeetingInMenuBar: Bool = true
+    var maraudersMapUnlocked: Bool = false
+    var maraudersMapAudioClip: String = "bbc_world_news"
+    var maraudersMapCustomAudioPath: String?
+    var hiddenCalendarEventIDs: [String] = []
+    var enablePostProcessor: Bool = false
+    var activePostProcessorId: String = PostProcessorOption.defaultOption.id
+    var postProcessorSystemPrompt: String = PostProcessorOption.defaultSystemPrompt
+    var enableScreenContext: Bool = false
+    var useCoreAudioTap: Bool = true
     var liveCoach: LiveCoachSettings = LiveCoachSettings()
 
     enum CodingKeys: String, CodingKey {
         case dictationHotkey = "dictation_hotkey"
         case sttBackend = "stt_backend"
         case sttModel = "stt_model"
+        case meetingTranscriptionBackend = "meeting_transcription_backend"
+        case meetingTranscriptionModel = "meeting_transcription_model"
         case meetingSummaryBackend = "meeting_summary_backend"
+        case defaultMeetingTemplateID = "default_meeting_template_id"
         case whisperModel = "whisper_model"
         case idleTimeout = "idle_timeout"
         case autoRecordMeetings = "auto_record_meetings"
         case showMeetingDetectionNotification = "show_meeting_detection_notification"
+        case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
         case launchAtLogin = "launch_at_login"
         case openDashboardOnLaunch = "open_dashboard_on_launch"
         case showFloatingIndicator = "show_floating_indicator"
+        case indicatorAnchor = "indicator_anchor"
         case dashboardWindowFrame = "dashboard_window_frame"
         case indicatorOrigin = "indicator_origin"
         case openAIAPIKey = "openai_api_key"
@@ -603,7 +818,22 @@ struct AppConfig: Codable {
         case meetingSummaryModel = "meeting_summary_model"
         case hasCompletedOnboarding = "has_completed_onboarding"
         case userName = "user_name"
+        case customMeetingTemplates = "custom_meeting_templates"
         case customWords = "custom_words"
+        case folderOrder = "folder_order"
+        case soundEnabled = "sound_enabled"
+        case recordingColorHex = "recording_color_hex"
+        case menuBarIcon = "menu_bar_icon"
+        case showNextMeetingInMenuBar = "show_next_meeting_in_menu_bar"
+        case maraudersMapUnlocked = "marauders_map_unlocked"
+        case maraudersMapAudioClip = "marauders_map_audio_clip"
+        case maraudersMapCustomAudioPath = "marauders_map_custom_audio_path"
+        case hiddenCalendarEventIDs = "hidden_calendar_event_ids"
+        case enablePostProcessor = "enable_post_processor"
+        case activePostProcessorId = "active_post_processor_id"
+        case postProcessorSystemPrompt = "post_processor_system_prompt"
+        case enableScreenContext = "enable_screen_context"
+        case useCoreAudioTap = "use_core_audio_tap"
         case liveCoach = "live_coach"
     }
 
@@ -615,16 +845,22 @@ struct AppConfig: Codable {
         dictationHotkey = (try? c.decode(HotkeyConfig.self, forKey: .dictationHotkey)) ?? defaults.dictationHotkey
         sttBackend = (try? c.decode(String.self, forKey: .sttBackend)) ?? defaults.sttBackend
         sttModel = (try? c.decode(String.self, forKey: .sttModel)) ?? defaults.sttModel
+        meetingTranscriptionBackend = (try? c.decode(String.self, forKey: .meetingTranscriptionBackend)) ?? sttBackend
+        meetingTranscriptionModel = (try? c.decode(String.self, forKey: .meetingTranscriptionModel)) ?? sttModel
         meetingSummaryBackend = (try? c.decode(String.self, forKey: .meetingSummaryBackend)) ?? defaults.meetingSummaryBackend
+        defaultMeetingTemplateID = (try? c.decode(String.self, forKey: .defaultMeetingTemplateID)) ?? defaults.defaultMeetingTemplateID
         whisperModel = (try? c.decode(String.self, forKey: .whisperModel)) ?? defaults.whisperModel
         idleTimeout = (try? c.decode(Double.self, forKey: .idleTimeout)) ?? defaults.idleTimeout
         autoRecordMeetings = (try? c.decode(Bool.self, forKey: .autoRecordMeetings)) ?? defaults.autoRecordMeetings
         showMeetingDetectionNotification = (try? c.decode(Bool.self, forKey: .showMeetingDetectionNotification)) ?? defaults.showMeetingDetectionNotification
+        meetingRecordingSavePolicy = (try? c.decode(MeetingRecordingSavePolicy.self, forKey: .meetingRecordingSavePolicy)) ?? defaults.meetingRecordingSavePolicy
         darkMode = (try? c.decode(Bool.self, forKey: .darkMode)) ?? defaults.darkMode
         enableDoubleTapDictation = (try? c.decode(Bool.self, forKey: .enableDoubleTapDictation)) ?? defaults.enableDoubleTapDictation
         launchAtLogin = (try? c.decode(Bool.self, forKey: .launchAtLogin)) ?? defaults.launchAtLogin
         openDashboardOnLaunch = (try? c.decode(Bool.self, forKey: .openDashboardOnLaunch)) ?? defaults.openDashboardOnLaunch
         showFloatingIndicator = (try? c.decode(Bool.self, forKey: .showFloatingIndicator)) ?? defaults.showFloatingIndicator
+        indicatorAnchor = (try? c.decode(IndicatorAnchor.self, forKey: .indicatorAnchor))
+            ?? ((try? c.decodeIfPresent(CGPointCodable.self, forKey: .indicatorOrigin)) != nil ? .custom : .midTrailing)
         dashboardWindowFrame = try? c.decode(WindowFrame.self, forKey: .dashboardWindowFrame)
         indicatorOrigin = try? c.decode(CGPointCodable.self, forKey: .indicatorOrigin)
         openAIAPIKey = (try? c.decode(String.self, forKey: .openAIAPIKey)) ?? defaults.openAIAPIKey
@@ -636,7 +872,22 @@ struct AppConfig: Codable {
         meetingSummaryModel = (try? c.decode(String.self, forKey: .meetingSummaryModel)) ?? defaults.meetingSummaryModel
         hasCompletedOnboarding = (try? c.decode(Bool.self, forKey: .hasCompletedOnboarding)) ?? defaults.hasCompletedOnboarding
         userName = (try? c.decode(String.self, forKey: .userName)) ?? defaults.userName
+        customMeetingTemplates = (try? c.decode([CustomMeetingTemplate].self, forKey: .customMeetingTemplates)) ?? defaults.customMeetingTemplates
         customWords = (try? c.decode([CustomWord].self, forKey: .customWords)) ?? defaults.customWords
+        folderOrder = (try? c.decode([Int64].self, forKey: .folderOrder)) ?? defaults.folderOrder
+        soundEnabled = (try? c.decode(Bool.self, forKey: .soundEnabled)) ?? defaults.soundEnabled
+        recordingColorHex = (try? c.decode(String.self, forKey: .recordingColorHex)) ?? defaults.recordingColorHex
+        menuBarIcon = (try? c.decode(String.self, forKey: .menuBarIcon)) ?? defaults.menuBarIcon
+        showNextMeetingInMenuBar = (try? c.decode(Bool.self, forKey: .showNextMeetingInMenuBar)) ?? defaults.showNextMeetingInMenuBar
+        maraudersMapUnlocked = (try? c.decode(Bool.self, forKey: .maraudersMapUnlocked)) ?? defaults.maraudersMapUnlocked
+        maraudersMapAudioClip = (try? c.decode(String.self, forKey: .maraudersMapAudioClip)) ?? defaults.maraudersMapAudioClip
+        maraudersMapCustomAudioPath = try? c.decode(String.self, forKey: .maraudersMapCustomAudioPath)
+        hiddenCalendarEventIDs = (try? c.decode([String].self, forKey: .hiddenCalendarEventIDs)) ?? defaults.hiddenCalendarEventIDs
+        enablePostProcessor = (try? c.decode(Bool.self, forKey: .enablePostProcessor)) ?? defaults.enablePostProcessor
+        activePostProcessorId = (try? c.decode(String.self, forKey: .activePostProcessorId)) ?? defaults.activePostProcessorId
+        postProcessorSystemPrompt = (try? c.decode(String.self, forKey: .postProcessorSystemPrompt)) ?? defaults.postProcessorSystemPrompt
+        enableScreenContext = (try? c.decode(Bool.self, forKey: .enableScreenContext)) ?? defaults.enableScreenContext
+        useCoreAudioTap = (try? c.decode(Bool.self, forKey: .useCoreAudioTap)) ?? defaults.useCoreAudioTap
         liveCoach = (try? c.decode(LiveCoachSettings.self, forKey: .liveCoach)) ?? defaults.liveCoach
     }
 }

@@ -16,31 +16,18 @@ enum TranscriptFormatter {
         speakerLabelMap: [String: String]? = nil,
         meetingStart: Date
     ) -> String {
-        // Detect if both streams captured the same audio (e.g., mic picks up speakers).
-        // When overlap is high, use system audio + diarization as the single source
-        // (diarization provides proper speaker labels like "Speaker 1", "Speaker 2").
-        // When overlap is low, use both streams: mic = "You", system = diarized speakers.
-        let overlapRatio = streamOverlapRatio(micSegments: micSegments, systemSegments: systemSegments)
-        let streamsAreDuplicated = overlapRatio > 0.5
-
-        let tagged: [TaggedSegment]
-
-        if streamsAreDuplicated && !systemSegments.isEmpty {
-            // Single-stream mode: both captured the same audio, so use system + diarization
-            // for proper speaker attribution instead of labeling everything "You".
-            let diarCount = diarizationSegments?.count ?? 0
-            fputs("[transcript] streams overlap \(String(format: "%.0f", overlapRatio * 100))%% — using system audio with diarization (\(diarCount) diar segments)\n", stderr)
-            tagged = tagSystemSegments(systemSegments, diarizationSegments: diarizationSegments, speakerLabelMap: speakerLabelMap)
-        } else {
-            // Dual-stream mode: streams captured different audio (headphones/separate sources).
-            // Mic is the user's voice, system is everyone else.
-            let taggedMic = micSegments.map { TaggedSegment(segment: $0, speaker: "You") }
-            let taggedSystem = tagSystemSegments(systemSegments, diarizationSegments: diarizationSegments, speakerLabelMap: speakerLabelMap)
-            tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
-        }
+        // Bleed filtering is now handled upstream by MeetingBleedDetector
+        // (speaker-embedding comparison), not text-based heuristics.
+        let taggedMic = micSegments.map { TaggedSegment(segment: $0, speaker: "You") }
+        let taggedSystem = tagSystemSegments(
+            systemSegments,
+            diarizationSegments: diarizationSegments,
+            speakerLabelMap: speakerLabelMap
+        )
+        let tagged = (taggedMic + taggedSystem).sorted { $0.segment.start < $1.segment.start }
 
         // Consolidate consecutive segments from the same speaker into single lines
-        let consolidated = consolidate(tagged)
+        let consolidated = filterLowSignalSegments(consolidate(tagged))
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -54,8 +41,13 @@ enum TranscriptFormatter {
         }.joined(separator: "\n")
     }
 
-    /// Merge consecutive segments from the same speaker into single entries.
-    /// Prevents token-level fragmentation (e.g., each token as a separate line).
+    /// Merge consecutive segments from the same speaker into single entries,
+    /// but only when they're temporally close (within 2s). This prevents
+    /// token-level fragmentation while preserving chronological ordering —
+    /// segments from the same speaker that are far apart in time stay separate
+    /// so they interleave correctly with other speakers.
+    private static let consolidationGapThreshold: TimeInterval = 2.0
+
     private static func consolidate(_ segments: [TaggedSegment]) -> [TaggedSegment] {
         guard !segments.isEmpty else { return [] }
 
@@ -66,12 +58,13 @@ enum TranscriptFormatter {
         var currentText = segments[0].segment.text
 
         for seg in segments.dropFirst() {
-            if seg.speaker == currentSpeaker {
-                // Same speaker — accumulate text
-                currentText += seg.segment.text
+            let gap = max(0, seg.segment.start - currentEnd)
+            if seg.speaker == currentSpeaker && gap <= consolidationGapThreshold {
+                // Same speaker, temporally close — accumulate text
+                currentText = appendText(currentText, seg.segment.text, gap: gap)
                 currentEnd = max(currentEnd, seg.segment.end)
             } else {
-                // Speaker changed — emit accumulated segment
+                // Different speaker or too far apart — emit and start new segment
                 result.append(TaggedSegment(
                     segment: SpeechSegment(start: currentStart, end: currentEnd, text: currentText),
                     speaker: currentSpeaker
@@ -124,33 +117,38 @@ enum TranscriptFormatter {
         }
     }
 
-    /// Fraction of system segments that have a near-duplicate in the mic stream (0.0–1.0).
-    /// A high ratio means both streams captured the same audio.
-    private static func streamOverlapRatio(
-        micSegments: [SpeechSegment],
-        systemSegments: [SpeechSegment]
-    ) -> Double {
-        guard !systemSegments.isEmpty, !micSegments.isEmpty else { return 0 }
+    private static func filterLowSignalSegments(_ segments: [TaggedSegment]) -> [TaggedSegment] {
+        guard !segments.isEmpty else { return [] }
 
-        let duplicateCount = systemSegments.filter { sysSegment in
-            let tolerance: Double = 10.0
-            return micSegments.contains { micSegment in
-                abs(micSegment.start - sysSegment.start) <= tolerance
-                    && wordOverlap(micSegment.text, sysSegment.text) > 0.5
-            }
-        }.count
-
-        return Double(duplicateCount) / Double(systemSegments.count)
+        return segments.enumerated().compactMap { index, segment in
+            isLowSignalFragment(segment, at: index, in: segments) ? nil : segment
+        }
     }
 
-    /// Jaccard similarity of word sets (intersection / union).
-    private static func wordOverlap(_ a: String, _ b: String) -> Double {
-        let wordsA = Set(a.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
-        let wordsB = Set(b.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
-        guard !wordsA.isEmpty || !wordsB.isEmpty else { return 0 }
-        let intersection = wordsA.intersection(wordsB).count
-        let union = wordsA.union(wordsB).count
-        return Double(intersection) / Double(union)
+    private static func isLowSignalFragment(
+        _ taggedSegment: TaggedSegment,
+        at index: Int,
+        in segments: [TaggedSegment]
+    ) -> Bool {
+        let normalized = normalizedText(taggedSegment.segment.text)
+        let compact = normalized.replacingOccurrences(of: " ", with: "")
+        let duration = max(taggedSegment.segment.end - taggedSegment.segment.start, 0)
+
+        if compact.isEmpty {
+            return true
+        }
+
+        if compact.count == 1 {
+            return true
+        }
+
+        guard compact.count <= 2, duration <= 0.45 else { return false }
+
+        return neighboringSegments(for: index, in: segments).contains { neighbor in
+            let neighborText = normalizedText(neighbor.segment.text).replacingOccurrences(of: " ", with: "")
+            guard neighborText.count >= 6 else { return false }
+            return temporalDistance(between: taggedSegment.segment, and: neighbor.segment) <= 0.35
+        }
     }
 
     /// Find the best-matching speaker for an ASR segment by time overlap with diarization segments.
@@ -159,6 +157,10 @@ enum TranscriptFormatter {
         in diarizationSegments: [TimedSpeakerSegment],
         labelMap: [String: String]
     ) -> String {
+        if labelMap.count == 1 {
+            return labelMap.values.first ?? "Others"
+        }
+
         let segStart = Float(segment.start)
         let segEnd = Float(max(segment.end, segment.start + 0.1)) // ensure non-zero duration
 
@@ -179,8 +181,180 @@ enum TranscriptFormatter {
         if let bestSpeakerId, bestOverlap > 0 {
             return labelMap[bestSpeakerId] ?? "Others"
         }
+
+        if let nearestSpeakerId = nearestSpeaker(
+            for: segment,
+            in: diarizationSegments,
+            maxGapSeconds: 2.0
+        ) {
+            return labelMap[nearestSpeakerId] ?? "Others"
+        }
         return "Others"
     }
+
+
+    private static func nearestSpeaker(
+        for segment: SpeechSegment,
+        in diarizationSegments: [TimedSpeakerSegment],
+        maxGapSeconds: Float
+    ) -> String? {
+        let segStart = Float(segment.start)
+        let segEnd = Float(max(segment.end, segment.start + 0.1))
+        let segMidpoint = (segStart + segEnd) / 2
+
+        let nearest = diarizationSegments.min { lhs, rhs in
+            temporalGap(between: segMidpoint, and: lhs) < temporalGap(between: segMidpoint, and: rhs)
+        }
+
+        guard let nearest else { return nil }
+        return temporalGap(between: segMidpoint, and: nearest) <= maxGapSeconds ? nearest.speakerId : nil
+    }
+
+    private static func temporalGap(
+        between point: Float,
+        and diarizationSegment: TimedSpeakerSegment
+    ) -> Float {
+        if point < diarizationSegment.startTimeSeconds {
+            return diarizationSegment.startTimeSeconds - point
+        }
+        if point > diarizationSegment.endTimeSeconds {
+            return point - diarizationSegment.endTimeSeconds
+        }
+        return 0
+    }
+
+    private static func overlapDuration(
+        between lhs: SpeechSegment,
+        and rhs: SpeechSegment
+    ) -> TimeInterval {
+        max(0, min(lhs.end, rhs.end) - max(lhs.start, rhs.start))
+    }
+
+    private static func overlapCoverage(
+        of segment: SpeechSegment,
+        across otherSegments: [SpeechSegment]
+    ) -> Double {
+        let duration = max(segment.end - segment.start, 0.1)
+        let overlap = unionOverlapDuration(of: segment, across: otherSegments)
+        return overlap / duration
+    }
+
+    private static func unionOverlapDuration(
+        of segment: SpeechSegment,
+        across otherSegments: [SpeechSegment]
+    ) -> TimeInterval {
+        let clippedIntervals = otherSegments.compactMap { otherSegment -> (TimeInterval, TimeInterval)? in
+            let overlapStart = max(segment.start, otherSegment.start)
+            let overlapEnd = min(segment.end, otherSegment.end)
+            guard overlapEnd > overlapStart else { return nil }
+            return (overlapStart, overlapEnd)
+        }.sorted { lhs, rhs in
+            if lhs.0 == rhs.0 {
+                return lhs.1 < rhs.1
+            }
+            return lhs.0 < rhs.0
+        }
+
+        guard var current = clippedIntervals.first else { return 0 }
+        var total: TimeInterval = 0
+
+        for interval in clippedIntervals.dropFirst() {
+            if interval.0 <= current.1 {
+                current.1 = max(current.1, interval.1)
+            } else {
+                total += current.1 - current.0
+                current = interval
+            }
+        }
+
+        total += current.1 - current.0
+        return total
+    }
+
+    private static func temporalDistance(
+        between lhs: SpeechSegment,
+        and rhs: SpeechSegment
+    ) -> TimeInterval {
+        if overlapDuration(between: lhs, and: rhs) > 0 {
+            return 0
+        }
+        if lhs.end <= rhs.start {
+            return rhs.start - lhs.end
+        }
+        return lhs.start - rhs.end
+    }
+
+    private static func neighboringSegments(for index: Int, in segments: [TaggedSegment]) -> [TaggedSegment] {
+        var neighbors: [TaggedSegment] = []
+        if index > 0 {
+            neighbors.append(segments[index - 1])
+        }
+        if index + 1 < segments.count {
+            neighbors.append(segments[index + 1])
+        }
+        return neighbors
+    }
+
+    private static func normalizedText(_ text: String) -> String {
+        let lowercase = text.lowercased()
+        let replaced = lowercase.replacingOccurrences(
+            of: #"[^a-z0-9\s]"#,
+            with: " ",
+            options: .regularExpression
+        )
+        return replaced.replacingOccurrences(
+            of: #"\s+"#,
+            with: " ",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func appendText(_ lhs: String, _ rhs: String, gap: TimeInterval) -> String {
+        if shouldConcatenateDirectly(lhs, rhs, gap: gap) {
+            return lhs + rhs
+        }
+        return joinText(lhs, rhs)
+    }
+
+    private static func shouldConcatenateDirectly(_ lhs: String, _ rhs: String, gap: TimeInterval) -> Bool {
+        guard gap <= 0.35 else { return false }
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        guard !rhs.contains(where: \.isWhitespace) else { return false }
+        guard let lhsLast = lhs.last, let rhsFirst = rhs.first else { return false }
+        guard !lhsLast.isWhitespace, !rhsFirst.isWhitespace, !rhsFirst.isPunctuation else { return false }
+
+        let lhsLastToken = lhs.split(whereSeparator: \.isWhitespace).last.map(String.init) ?? lhs
+        guard !lhsLastToken.contains(where: \.isWhitespace) else { return false }
+
+        let lhsVisibleLength = visibleLength(of: lhsLastToken)
+        let rhsVisibleLength = visibleLength(of: rhs)
+        return lhsVisibleLength + rhsVisibleLength <= 8
+    }
+
+    private static func joinText(_ lhs: String, _ rhs: String) -> String {
+        guard !lhs.isEmpty else { return rhs }
+        guard !rhs.isEmpty else { return lhs }
+        guard let lhsLast = lhs.last, let rhsFirst = rhs.first else {
+            return lhs + rhs
+        }
+
+        if lhsLast.isWhitespace || rhsFirst.isWhitespace || rhsFirst.isPunctuation {
+            return lhs + rhs
+        }
+
+        if lhsLast.isPunctuation {
+            return lhs + " " + rhs
+        }
+
+        return lhs + " " + rhs
+    }
+
+    private static func visibleLength(of text: String) -> Int {
+        text.unicodeScalars.reduce(0) { partialResult, scalar in
+            partialResult + (CharacterSet.whitespacesAndNewlines.contains(scalar) ? 0 : 1)
+        }
+    }
+
 }
 
 private struct TaggedSegment {

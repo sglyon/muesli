@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import MuesliCore
+import SQLite3
 @testable import MuesliNativeApp
 
 @Suite("DictationStore", .serialized)
@@ -16,10 +17,88 @@ struct DictationStoreTests {
         return store
     }
 
+    private func makeLegacyStore() throws -> DictationStore {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muesli-legacy-test-\(UUID().uuidString).db")
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path, &db) == SQLITE_OK)
+        defer { sqlite3_close(db) }
+        let sql = """
+        CREATE TABLE meetings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            calendar_event_id TEXT,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            duration_seconds REAL,
+            raw_transcript TEXT,
+            formatted_notes TEXT,
+            mic_audio_path TEXT,
+            system_audio_path TEXT,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'meeting',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+        #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        return DictationStore(databaseURL: url)
+    }
+
     @Test("migration creates tables without error")
     func migration() throws {
         let store = try makeStore()
         try store.migrateIfNeeded() // idempotent
+    }
+
+    @Test("migration adds template columns to legacy meeting schema")
+    func migrationAddsTemplateColumns() throws {
+        let store = try makeLegacyStore()
+
+        try store.migrateIfNeeded()
+
+        let meeting = try store.meeting(id: 1)
+        #expect(meeting == nil)
+        try store.insertMeeting(
+            title: "Legacy Meeting",
+            calendarEventID: nil,
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(60),
+            rawTranscript: "Legacy transcript",
+            formattedNotes: "Legacy notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            selectedTemplateID: "one-to-one",
+            selectedTemplateName: "1 to 1",
+            selectedTemplateKind: .builtin,
+            selectedTemplatePrompt: "## Check-In"
+        )
+        let inserted = try store.recentMeetings(limit: 1).first
+        #expect(inserted?.selectedTemplateID == "one-to-one")
+        #expect(inserted?.selectedTemplateKind == .builtin)
+        #expect(inserted?.savedRecordingPath == nil)
+    }
+
+    @Test("migration adds saved recording path column to legacy meeting schema")
+    func migrationAddsSavedRecordingColumn() throws {
+        let store = try makeLegacyStore()
+
+        try store.migrateIfNeeded()
+
+        let start = Date()
+        try store.insertMeeting(
+            title: "Saved Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            savedRecordingPath: "/tmp/meeting.wav"
+        )
+
+        let inserted = try store.recentMeetings(limit: 1).first
+        #expect(inserted?.savedRecordingPath == "/tmp/meeting.wav")
     }
 
     @Test("insert and retrieve dictation")
@@ -60,6 +139,34 @@ struct DictationStoreTests {
         #expect(rows.count == 1)
         #expect(rows.first!.title == "Test Meeting")
         #expect(rows.first!.wordCount == 7)
+        #expect(rows.first!.appliedTemplateID == MeetingTemplates.autoID)
+    }
+
+    @Test("meeting template snapshot persists on insert")
+    func insertAndRetrieveMeetingTemplateSnapshot() throws {
+        let store = try makeStore()
+
+        let start = Date()
+        try store.insertMeeting(
+            title: "Template Meeting",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(300),
+            rawTranscript: "Transcript body",
+            formattedNotes: "## Summary\nStructured",
+            micAudioPath: nil,
+            systemAudioPath: nil,
+            selectedTemplateID: "stand-up",
+            selectedTemplateName: "Stand-Up",
+            selectedTemplateKind: .builtin,
+            selectedTemplatePrompt: "## Yesterday"
+        )
+
+        let meeting = try store.recentMeetings(limit: 1).first
+        #expect(meeting?.selectedTemplateID == "stand-up")
+        #expect(meeting?.selectedTemplateName == "Stand-Up")
+        #expect(meeting?.selectedTemplateKind == .builtin)
+        #expect(meeting?.selectedTemplatePrompt == "## Yesterday")
     }
 
     @Test("update meeting notes and title")
@@ -112,6 +219,41 @@ struct DictationStoreTests {
         #expect(updated.first!.formattedNotes == "New notes")
     }
 
+    @Test("update meeting summary stores template snapshot")
+    func updateMeetingSummaryWithTemplateSnapshot() throws {
+        let store = try makeStore()
+
+        let start = Date()
+        try store.insertMeeting(
+            title: "Original Title",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(60),
+            rawTranscript: "Transcript",
+            formattedNotes: "Old notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let meetingID = try store.recentMeetings(limit: 1).first!.id
+        try store.updateMeetingSummary(
+            id: meetingID,
+            title: "Standup",
+            formattedNotes: "## Yesterday\n- Fixed bugs",
+            selectedTemplateID: "stand-up",
+            selectedTemplateName: "Stand-Up",
+            selectedTemplateKind: .builtin,
+            selectedTemplatePrompt: "## Yesterday"
+        )
+
+        let updated = try store.recentMeetings(limit: 1).first
+        #expect(updated?.title == "Standup")
+        #expect(updated?.selectedTemplateID == "stand-up")
+        #expect(updated?.selectedTemplateName == "Stand-Up")
+        #expect(updated?.selectedTemplateKind == .builtin)
+        #expect(updated?.selectedTemplatePrompt == "## Yesterday")
+    }
+
     @Test("fetch dictation by id returns the full record")
     func fetchDictationByID() throws {
         let store = try makeStore()
@@ -146,7 +288,8 @@ struct DictationStoreTests {
             rawTranscript: "Discussed roadmap items",
             formattedNotes: "## Summary\nRoadmap reviewed",
             micAudioPath: "/tmp/mic.wav",
-            systemAudioPath: "/tmp/system.wav"
+            systemAudioPath: "/tmp/system.wav",
+            savedRecordingPath: "/tmp/meeting.wav"
         )
 
         let inserted = try store.recentMeetings(limit: 1).first!
@@ -156,7 +299,9 @@ struct DictationStoreTests {
         #expect(fetched?.calendarEventID == "evt_123")
         #expect(fetched?.micAudioPath == "/tmp/mic.wav")
         #expect(fetched?.systemAudioPath == "/tmp/system.wav")
+        #expect(fetched?.savedRecordingPath == "/tmp/meeting.wav")
         #expect(fetched?.notesState == .structuredNotes)
+        #expect(fetched?.appliedTemplateID == MeetingTemplates.autoID)
     }
 
     @Test("meeting notes state distinguishes raw transcript fallback from structured notes")
@@ -180,7 +325,7 @@ struct DictationStoreTests {
             startTime: "2026-03-17T10:00:00Z",
             durationSeconds: 60,
             rawTranscript: "Hello world",
-            formattedNotes: "# Fallback\n\n## Raw Transcript\n\nHello world",
+            formattedNotes: "## Raw Transcript\n\nHello world",
             wordCount: 2,
             folderID: nil,
             calendarEventID: nil,
@@ -200,10 +345,24 @@ struct DictationStoreTests {
             micAudioPath: nil,
             systemAudioPath: nil
         )
+        let structuredWithTranscriptSection = MeetingRecord(
+            id: 4,
+            title: "Structured With Transcript Section",
+            startTime: "2026-03-17T10:00:00Z",
+            durationSeconds: 60,
+            rawTranscript: "Hello world",
+            formattedNotes: "## Summary\nNext steps captured\n\n## Raw Transcript\n\nQuoted transcript for reference",
+            wordCount: 2,
+            folderID: nil,
+            calendarEventID: nil,
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
 
         #expect(missing.notesState == .missing)
         #expect(fallback.notesState == .rawTranscriptFallback)
         #expect(structured.notesState == .structuredNotes)
+        #expect(structuredWithTranscriptSection.notesState == .structuredNotes)
     }
 
     @Test("dictation stats aggregate correctly")
@@ -253,6 +412,41 @@ struct DictationStoreTests {
         try store.insertMeeting(title: "Del", calendarEventID: nil, startTime: now, endTime: now.addingTimeInterval(60), rawTranscript: "x", formattedNotes: "", micAudioPath: nil, systemAudioPath: nil)
         try store.clearMeetings()
         #expect(try store.recentMeetings(limit: 100).isEmpty)
+    }
+
+    @Test("delete meeting removes a single meeting row")
+    func deleteMeeting() throws {
+        let store = try makeStore()
+        let now = Date()
+
+        try store.insertMeeting(
+            title: "Delete Me",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "first meeting",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.insertMeeting(
+            title: "Keep Me",
+            calendarEventID: nil,
+            startTime: now.addingTimeInterval(120),
+            endTime: now.addingTimeInterval(180),
+            rawTranscript: "second meeting",
+            formattedNotes: "",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let meetings = try store.recentMeetings(limit: 10)
+        let deleteID = meetings.first(where: { $0.title == "Delete Me" })!.id
+        try store.deleteMeeting(id: deleteID)
+
+        let remaining = try store.recentMeetings(limit: 10)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.title == "Keep Me")
     }
 
     @Test("recent dictations respects limit")
@@ -313,6 +507,28 @@ struct DictationStoreTests {
         let updated = try store.recentMeetings(limit: 1)
         #expect(updated.first!.title == "Edited Title")
         #expect(updated.first!.formattedNotes == "## Notes\nKeep these") // notes unchanged
+    }
+
+    @Test("update meeting saved recording path stores the retained file location")
+    func updateMeetingSavedRecordingPath() throws {
+        let store = try makeStore()
+
+        let now = Date()
+        let meetingID = try store.insertMeeting(
+            title: "Auto Title",
+            calendarEventID: nil,
+            startTime: now,
+            endTime: now.addingTimeInterval(60),
+            rawTranscript: "Some words",
+            formattedNotes: "## Notes\nKeep these",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        try store.updateMeetingSavedRecordingPath(id: meetingID, path: "/tmp/retained.wav")
+
+        let updated = try store.meeting(id: meetingID)
+        #expect(updated?.savedRecordingPath == "/tmp/retained.wav")
     }
 
     // MARK: - Folder CRUD
@@ -453,5 +669,80 @@ struct DictationStoreTests {
 
         let meeting = try store.recentMeetings(limit: 1).first!
         #expect(meeting.folderID == nil)
+    }
+
+    // MARK: - Search Tests
+
+    @Test("searchDictations returns matching records by raw_text")
+    func searchDictationsMatches() throws {
+        let store = try makeStore()
+        let now = Date()
+        try store.insertDictation(text: "Hello world from muesli", durationSeconds: 2, startedAt: now, endedAt: now)
+        try store.insertDictation(text: "Goodbye everyone", durationSeconds: 1, startedAt: now, endedAt: now)
+
+        let results = try store.searchDictations(query: "muesli")
+        #expect(results.count == 1)
+        #expect(results.first!.rawText.contains("muesli"))
+    }
+
+    @Test("searchDictations returns empty for non-matching query")
+    func searchDictationsNoMatch() throws {
+        let store = try makeStore()
+        let now = Date()
+        try store.insertDictation(text: "Hello world", durationSeconds: 2, startedAt: now, endedAt: now)
+
+        let results = try store.searchDictations(query: "xyznonexistent")
+        #expect(results.isEmpty)
+    }
+
+    @Test("searchMeetings matches across title, transcript, and notes")
+    func searchMeetingsMultiField() throws {
+        let store = try makeStore()
+        let start = Date()
+        try store.insertMeeting(
+            title: "Sprint Planning",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(600),
+            rawTranscript: "We discussed the backlog items",
+            formattedNotes: "## Notes\nPrioritized features",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        try store.insertMeeting(
+            title: "Design Review",
+            calendarEventID: nil,
+            startTime: start,
+            endTime: start.addingTimeInterval(300),
+            rawTranscript: "Reviewed the mockups",
+            formattedNotes: "## Notes\nApproved designs",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+
+        let byTitle = try store.searchMeetings(query: "Sprint")
+        #expect(byTitle.count == 1)
+        #expect(byTitle.first!.title == "Sprint Planning")
+
+        let byTranscript = try store.searchMeetings(query: "backlog")
+        #expect(byTranscript.count == 1)
+
+        let byNotes = try store.searchMeetings(query: "Prioritized")
+        #expect(byNotes.count == 1)
+    }
+
+    @Test("search is case-insensitive for ASCII")
+    func searchCaseInsensitive() throws {
+        let store = try makeStore()
+        let now = Date()
+        try store.insertDictation(text: "Meeting with Alice", durationSeconds: 2, startedAt: now, endedAt: now)
+
+        let upper = try store.searchDictations(query: "ALICE")
+        let lower = try store.searchDictations(query: "alice")
+        let mixed = try store.searchDictations(query: "Alice")
+
+        #expect(upper.count == 1)
+        #expect(lower.count == 1)
+        #expect(mixed.count == 1)
     }
 }
