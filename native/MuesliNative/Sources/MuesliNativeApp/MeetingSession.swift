@@ -111,61 +111,15 @@ final class MeetingSession {
     var onProgress: ((MeetingProcessingStage) -> Void)?
     private let screenContextCollector = MeetingScreenContextCollector()
 
-    // MARK: - Incremental transcript access (for mid-session clipboard copy)
-
-    /// Resolved mic segments accumulated as chunks complete transcription.
-    private let resolvedMicSegments = OSAllocatedUnfairLock(initialState: [SpeechSegment]())
-    /// Resolved system audio segments accumulated as chunks complete transcription.
-    private let resolvedSystemSegments = OSAllocatedUnfairLock(initialState: [SpeechSegment]())
-    /// Diarization segments accumulated from chunk-level speaker identification.
-    private let resolvedDiarizationSegments = OSAllocatedUnfairLock(initialState: [TimedSpeakerSegment]())
-    /// Stable speaker label map: speakerId → "Speaker N" (persists across polls).
-    private let speakerLabelMap = OSAllocatedUnfairLock(initialState: [String: String]())
-    private let nextSpeakerNumber = OSAllocatedUnfairLock(initialState: 1)
+    /// Fired after each chunk finishes transcription + per-chunk diarization.
+    /// Consumers (e.g. `LiveCoachCoordinator`) accumulate state from this rather
+    /// than peeking into private MeetingSession fields. Keeps upstream merge
+    /// surface small — the session just emits; who listens is upstream-agnostic.
+    var onChunkResolved: ((MeetingChunkResolution) -> Void)?
 
     /// Current mic power level for waveform visualization.
     func currentPower() -> Float {
         streamingMicRecorder.currentPower()
-    }
-
-    /// Number of resolved segments (cheap check to detect changes without copying arrays).
-    func segmentCounts() -> (mic: Int, system: Int) {
-        (resolvedMicSegments.withLock { $0.count },
-         resolvedSystemSegments.withLock { $0.count })
-    }
-
-    /// Snapshot of all resolved segments so far (for live transcript display).
-    func allSegments() -> (mic: [SpeechSegment], system: [SpeechSegment], diarization: [TimedSpeakerSegment], labelMap: [String: String]) {
-        (resolvedMicSegments.withLock { Array($0) },
-         resolvedSystemSegments.withLock { Array($0) },
-         resolvedDiarizationSegments.withLock { Array($0) },
-         speakerLabelMap.withLock { $0 })
-    }
-
-    /// Returns the formatted transcript delta since the given offsets, plus new offsets.
-    /// Used for mid-session clipboard copy (e.g., "send to Claude" hotkey).
-    func transcriptDelta(
-        micOffset: Int,
-        systemOffset: Int
-    ) -> (text: String, newMicOffset: Int, newSystemOffset: Int) {
-        let meetingStart = self.startTime ?? Date()
-
-        let micSegs = resolvedMicSegments.withLock { Array($0.dropFirst(micOffset)) }
-        let sysSegs = resolvedSystemSegments.withLock { Array($0.dropFirst(systemOffset)) }
-
-        let newMicOffset = micOffset + micSegs.count
-        let newSystemOffset = systemOffset + sysSegs.count
-
-        guard !micSegs.isEmpty || !sysSegs.isEmpty else {
-            return (text: "", newMicOffset: newMicOffset, newSystemOffset: newSystemOffset)
-        }
-
-        let text = TranscriptFormatter.merge(
-            micSegments: micSegs,
-            systemSegments: sysSegs,
-            meetingStart: meetingStart
-        )
-        return (text: text, newMicOffset: newMicOffset, newSystemOffset: newSystemOffset)
     }
 
     private(set) var startTime: Date?
@@ -588,7 +542,12 @@ final class MeetingSession {
                 isFinalChunk: false
             )
             if !segments.isEmpty {
-                self.resolvedMicSegments.withLock { $0.append(contentsOf: segments) }
+                self.onChunkResolved?(MeetingChunkResolution(
+                    mic: segments,
+                    system: [],
+                    diarization: [],
+                    chunkOffset: chunkOffset
+                ))
             }
             return segments
         }
@@ -638,14 +597,14 @@ final class MeetingSession {
                         self.systemChunkHealthTracker.noteEmptyChunk()
                     } else {
                         self.systemChunkHealthTracker.noteSuccessfulChunk()
-                        self.resolvedSystemSegments.withLock { $0.append(contentsOf: normalizedSegments) }
 
                         // Run diarization on this chunk for live speaker labels.
                         // The shared DiarizerManager's SpeakerManager persists across chunks,
                         // so speaker IDs will be consistent as it matches embeddings.
+                        var liveDiarization: [TimedSpeakerSegment] = []
                         do {
                             if let diarResult = try await self.transcriptionCoordinator.diarizeSystemAudio(at: chunkURL) {
-                                let offsetSegments = diarResult.segments.map { seg in
+                                liveDiarization = diarResult.segments.map { seg in
                                     TimedSpeakerSegment(
                                         speakerId: seg.speakerId,
                                         embedding: seg.embedding,
@@ -654,26 +613,18 @@ final class MeetingSession {
                                         qualityScore: seg.qualityScore
                                     )
                                 }
-                                self.resolvedDiarizationSegments.withLock { $0.append(contentsOf: offsetSegments) }
-
-                                for seg in diarResult.segments {
-                                    self.speakerLabelMap.withLock { map in
-                                        if map[seg.speakerId] == nil {
-                                            let num = self.nextSpeakerNumber.withLock { n in
-                                                let current = n
-                                                n += 1
-                                                return current
-                                            }
-                                            map[seg.speakerId] = "Speaker \(num)"
-                                        }
-                                    }
-                                }
-
                                 fputs("[meeting] chunk diarization: \(diarResult.segments.count) segments\n", stderr)
                             }
                         } catch {
                             fputs("[meeting] chunk diarization failed: \(error)\n", stderr)
                         }
+
+                        self.onChunkResolved?(MeetingChunkResolution(
+                            mic: [],
+                            system: normalizedSegments,
+                            diarization: liveDiarization,
+                            chunkOffset: chunkOffset
+                        ))
                     }
                     return normalizedSegments
                 }

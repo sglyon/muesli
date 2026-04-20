@@ -7,7 +7,7 @@ final class LiveTranscriptPanelController {
     private var panel: NSPanel?
     private var pollTimer: Timer?
     private let viewModel = LiveTranscriptViewModel()
-    private weak var meetingSession: MeetingSession?
+    private weak var source: LiveTranscriptSource?
     private var lastMicCount = 0
     private var lastSystemCount = 0
 
@@ -27,13 +27,13 @@ final class LiveTranscriptPanelController {
     var isVisible: Bool { panel?.isVisible ?? false }
 
     func show(
-        session: MeetingSession,
+        source: LiveTranscriptSource,
         title: String,
         meetingID: String,
         config: AppConfig,
         coachSidecar: LiveCoachSidecar?
     ) {
-        meetingSession = session
+        self.source = source
         lastMicCount = 0
         lastSystemCount = 0
         viewModel.entries = []
@@ -87,7 +87,7 @@ final class LiveTranscriptPanelController {
     }
 
     func toggle(
-        session: MeetingSession,
+        source: LiveTranscriptSource,
         title: String,
         meetingID: String,
         config: AppConfig,
@@ -96,7 +96,7 @@ final class LiveTranscriptPanelController {
         if isVisible {
             hide()
         } else {
-            show(session: session, title: title, meetingID: meetingID, config: config, coachSidecar: coachSidecar)
+            show(source: source, title: title, meetingID: meetingID, config: config, coachSidecar: coachSidecar)
         }
     }
 
@@ -222,21 +222,21 @@ final class LiveTranscriptPanelController {
     }
 
     private func poll() {
-        guard let session = meetingSession else {
-            fputs("[muesli-native] live transcript: session is nil, stopping poll\n", stderr)
+        guard let source = source else {
+            fputs("[muesli-native] live transcript: source is nil, stopping poll\n", stderr)
             stopPolling()
             return
         }
 
-        let counts = session.segmentCounts()
+        let counts = source.segmentCounts()
         guard counts.mic != lastMicCount || counts.system != lastSystemCount else { return }
 
         fputs("[muesli-native] live transcript: mic=\(counts.mic) sys=\(counts.system) (was mic=\(lastMicCount) sys=\(lastSystemCount))\n", stderr)
         lastMicCount = counts.mic
         lastSystemCount = counts.system
 
-        let (micSegs, sysSegs, diarSegs, labelMap) = session.allSegments()
-        let meetingStart = session.startTime ?? Date()
+        let (micSegs, sysSegs, diarSegs, labelMap) = source.allSegments()
+        let meetingStart = source.meetingStartTime ?? Date()
 
         let merged = TranscriptFormatter.merge(
             micSegments: micSegs,
